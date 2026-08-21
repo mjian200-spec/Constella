@@ -1,0 +1,2 @@
+# Install this separately only on a CUDA host that will serve the local model.
+vllm==0.19.0

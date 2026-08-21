@@ -1,0 +1,16 @@
+models:
+  small:
+    # Start vLLM with scripts/serve_qwen.sh before enabling model-assisted routing.
+    base_url: http://127.0.0.1:8000/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.5-9b
+    temperature: 0
+    max_tokens: 1024
+    timeout: 120
+  large:
+    base_url: http://127.0.0.1:8000/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.5-9b
+    temperature: 0
+    max_tokens: 4096
+    timeout: 300

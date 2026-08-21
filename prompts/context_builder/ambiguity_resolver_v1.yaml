@@ -1,0 +1,6 @@
+id: ambiguity_resolver
+version: 1
+system: "Choose only from supplied candidates, or return unknown. Never create an asset ID."
+input_template: "{source_unit}\n{candidates}"
+output_schema: {type: object, properties: {selected_id: {type: [string, 'null']}}}
+examples: []

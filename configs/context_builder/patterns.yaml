@@ -1,0 +1,100 @@
+version: 1
+groups:
+  noise:
+    - id: noise.page_number_only
+      enabled: true
+      priority: 100
+      matcher: {type: regex, pattern: '^\s*\d{1,4}\s*$', flags: []}
+      conditions: {unit_types: [passage], max_length: 8}
+      action: {type: add_role_candidate, target: noise}
+      confidence: 0.95
+  heading:
+    - id: heading.chinese_chapter
+      enabled: true
+      priority: 110
+      matcher: {type: regex, pattern: '^\s*第\s*[0-9一二三四五六七八九十百]+\s*章(?:\s+.+)?$', flags: []}
+      conditions: {unit_types: [title, passage], max_length: 100}
+      action: {type: add_candidate, target: heading, value: chapter}
+      confidence: 0.98
+  asset_reference:
+    - id: asset_reference.explicit_figure
+      enabled: true
+      priority: 120
+      matcher: {type: regex, pattern: '图\s*(?P<chapter>\d+)\s*[-—－]\s*(?P<sequence>\d+)', flags: []}
+      conditions: {unit_types: [passage, caption]}
+      action: {type: create_asset_reference_candidate, target: figure}
+      confidence: 0.99
+    - id: asset_reference.explicit_table
+      enabled: true
+      priority: 120
+      matcher: {type: regex, pattern: '表\s*(?P<chapter>\d+)\s*[-—－]\s*(?P<sequence>\d+)', flags: []}
+      conditions: {unit_types: [passage, caption]}
+      action: {type: create_asset_reference_candidate, target: table}
+      confidence: 0.99
+  continuation:
+    - id: continuation.cross_page_sentence
+      enabled: true
+      priority: 100
+      matcher: {type: keywords, mode: any, values: ["。"]}
+      conditions: {unit_types: [passage]}
+      action: {type: create_relation_candidate, target: CONTINUES}
+      confidence: 0.80
+  condition_language:
+    - id: condition.in_when
+      enabled: true
+      priority: 86
+      matcher: {type: regex, pattern: '在(?P<condition>[^，。；]{1,80})时', flags: []}
+      conditions: {unit_types: [title, passage, table_cell, caption]}
+      action: {type: create_constraint_candidate, target: explicit_condition}
+      confidence: 0.85
+    - id: condition.explicit_under
+      enabled: true
+      priority: 90
+      matcher: {type: regex, pattern: '在(?P<condition>[^，。；]{1,80})条件下', flags: []}
+      conditions: {unit_types: [title, passage, table_cell, caption]}
+      action: {type: create_constraint_candidate, target: explicit_condition}
+      confidence: 0.85
+    - id: condition.when
+      enabled: true
+      priority: 85
+      matcher: {type: regex, pattern: '当(?P<condition>[^，。；]{1,80})时', flags: []}
+      conditions: {unit_types: [title, passage, table_cell, caption]}
+      action: {type: create_constraint_candidate, target: explicit_condition}
+      confidence: 0.85
+    - id: condition.other_equal
+      enabled: true
+      priority: 85
+      matcher: {type: keywords, mode: any, values: ["其他条件相同", "在其他条件相同时"]}
+      conditions: {unit_types: [passage, table_cell]}
+      action: {type: create_constraint_candidate, target: explicit_condition}
+      confidence: 0.8
+  rule_language:
+    - id: rule.monotonic_change
+      enabled: true
+      priority: 90
+      matcher: {type: regex, pattern: '随着.+(?:增加|增大|提高|减少|减小|降低)', flags: []}
+      conditions: {unit_types: [passage, table_cell, caption]}
+      action: {type: add_role_candidate, target: rule}
+      confidence: 0.85
+    - id: rule.causal_result
+      enabled: true
+      priority: 80
+      matcher: {type: regex, pattern: '.+(?:将|会|可|能).+(?:形成|产生|生成|出现|增加|减少|提高|降低)', flags: []}
+      conditions: {unit_types: [passage, table_cell]}
+      action: {type: add_role_candidate, target: rule}
+      confidence: 0.78
+    - id: rule.table_evidence
+      enabled: true
+      priority: 82
+      matcher: {type: regex, pattern: '(?:从|由)表\s*\d+\s*[-—－]\s*\d+\s*(?:可见|可知)', flags: []}
+      conditions: {unit_types: [passage]}
+      action: {type: add_role_candidate, target: rule}
+      confidence: 0.83
+  ontology_language:
+    - id: ontology.classification
+      enabled: true
+      priority: 90
+      matcher: {type: regex, pattern: '(?P<subject>[^，。；]{1,40})(?:可|可以)?分为(?P<classes>[^。；]{1,100})', flags: []}
+      conditions: {unit_types: [passage, caption]}
+      action: {type: add_role_candidate, target: ontology}
+      confidence: 0.90
