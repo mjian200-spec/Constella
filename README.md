@@ -16,3 +16,6 @@ conda run -p /ENV/Anaconda/envs/jm/constella \
 The local sample data under `GMAW/` and generated `outputs/` are ignored by Git.
 See `configs/context_builder/models.yaml` and `scripts/serve_qwen.sh` to use a
 Qwen 3.5 9B model served by vLLM 0.19.
+
+Known implementation decisions and runtime limitations are recorded in
+[`docs/implementation_notes.md`](docs/implementation_notes.md).
