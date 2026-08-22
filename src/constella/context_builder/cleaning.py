@@ -34,6 +34,7 @@ def normalize_document(graph: DocumentGraph, runtime: PipelineRuntime, patterns:
             previous = graph.units[order[index - 1]]
             if _continues(previous, unit):
                 graph.add_relation(previous.id, unit.id, "CONTINUES", confidence=0.8, evidence=["continuation.cross_page_sentence"])
+    _remove_front_matter_before_body(graph, runtime)
     runtime.record(stage="normalize_document", units=len(graph.units))
 
 
@@ -47,3 +48,49 @@ def _continues(previous, current) -> bool:
     if not isinstance(previous.content, str) or not isinstance(current.content, str):
         return False
     return bool(previous.content and current.content and previous.content[-1] not in "。！？；:：" and current.content[0] not in "第图表")
+
+
+def _remove_front_matter_before_body(graph: DocumentGraph, runtime: PipelineRuntime) -> None:
+    """Remove a table of contents and everything before the body it indexes.
+
+    A TOC contains its own chapter headings, so the body boundary is not the
+    first ``第1章`` after ``目录``.  We require a chapter-number reset: after the
+    TOC has reached a later chapter, a new non-header ``第1章`` starts the body.
+    If that evidence is absent, retain the document rather than guess.
+    """
+    order = ordered_units(graph)
+    toc_positions = [
+        index for index, unit_id in enumerate(order)
+        if isinstance(graph.units[unit_id].content, str)
+        and graph.units[unit_id].content.strip().replace(" ", "") == "目录"
+    ]
+    if not toc_positions:
+        return
+    toc_position = toc_positions[-1]
+    chapters: list[tuple[int, int]] = []
+    for index, unit_id in enumerate(order[toc_position + 1:], start=toc_position + 1):
+        unit = graph.units[unit_id]
+        if unit.attributes.get("layout_role") or not isinstance(unit.content, str):
+            continue
+        match = re.match(r"^第\s*(?P<number>\d+)\s*章", unit.content.strip())
+        if match:
+            chapters.append((index, int(match.group("number"))))
+    body_starts = [
+        index for index, number in chapters
+        if number == 1 and any(previous_number > 1 for previous_index, previous_number in chapters if previous_index < index)
+    ]
+    if not body_starts:
+        return
+    body_start = body_starts[-1]
+    removed_ids = set(order[:body_start])
+    graph.units = {unit_id: unit for unit_id, unit in graph.units.items() if unit_id not in removed_ids}
+    graph.relations = [
+        relation for relation in graph.relations
+        if relation.source_id not in removed_ids and relation.target_id not in removed_ids
+    ]
+    graph.metadata["front_matter"] = {
+        "removed_unit_count": len(removed_ids),
+        "toc_unit_id": order[toc_position],
+        "body_start_unit_id": order[body_start],
+    }
+    runtime.record(stage="remove_front_matter", removed_units=len(removed_ids), body_start=order[body_start])

@@ -1,0 +1,22 @@
+id: route_classifier
+version: 2
+system: >-
+  You classify only the supplied document units. For each supplied unit_id return exactly one role:
+  rule, structured_candidate, support, or unknown. Select rule only when the unit itself states a
+  causal, comparative, conditional, or parameter-to-result relationship. Select structured_candidate
+  only for an explicit definition, classification, composition, or model designation. Do not infer facts,
+  conditions, asset links, or IDs. Return unknown when the source alone is insufficient.
+input_template: "{units}"
+output_schema:
+  type: object
+  properties:
+    labels:
+      type: array
+      items:
+        type: object
+        properties:
+          unit_id: {type: string}
+          role: {type: string, enum: [rule, structured_candidate, support, unknown]}
+        required: [unit_id, role]
+  required: [labels]
+examples: []

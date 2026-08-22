@@ -18,13 +18,17 @@ from .scopes import resolve_constraint_scopes
 from .structure import build_document_structure
 
 
-def load_runtime(config_dir: str | Path, *, use_llm: bool = False) -> PipelineRuntime:
+def load_runtime(
+    config_dir: str | Path, *, use_llm: bool = False, llm_max_batches: int | None = None,
+) -> PipelineRuntime:
     directory = Path(config_dir)
     model_path = directory / "models.yaml"
     models: dict[str, Any] = {}
     if model_path.exists():
         models = yaml.safe_load(model_path.read_text(encoding="utf-8")).get("models", {})
-    return PipelineRuntime(config_dir=directory, use_llm=use_llm, model_config=models)
+    return PipelineRuntime(
+        config_dir=directory, use_llm=use_llm, llm_max_batches=llm_max_batches, model_config=models,
+    )
 
 
 def run_context_builder(input_path: str, output_dir: str, runtime: PipelineRuntime) -> DocumentGraph:

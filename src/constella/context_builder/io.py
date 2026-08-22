@@ -74,11 +74,12 @@ def save_context_outputs(graph: DocumentGraph, packages: list[ContextPackage], o
         json.dumps(graph.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
     _write_jsonl(directory / "context_packages.jsonl", [package.to_dict() for package in packages])
-    ontology = [
+    structured_candidates = [
         {"unit_id": unit.id, "content": unit.content, "source": asdict(unit.source), "roles": unit.role}
-        for unit in graph.units.values() if "ontology" in unit.role
+        for unit in graph.units.values() if "structured_candidate" in unit.role
     ]
-    _write_jsonl(directory / "ontology_candidates.jsonl", ontology)
+    # Filename remains part of the output contract; records are neutral structured candidates.
+    _write_jsonl(directory / "ontology_candidates.jsonl", structured_candidates)
     _write_jsonl(directory / "ambiguities.jsonl", [asdict(item) for item in graph.ambiguities.values()])
     report = {
         "unit_count": len(graph.units), "relation_count": len(graph.relations),

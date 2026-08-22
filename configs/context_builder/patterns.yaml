@@ -44,28 +44,35 @@ groups:
       enabled: true
       priority: 86
       matcher: {type: regex, pattern: '在(?P<condition>[^，。；]{1,80})时', flags: []}
-      conditions: {unit_types: [title, passage, table_cell, caption]}
+      conditions: {unit_types: [title, passage]}
       action: {type: create_constraint_candidate, target: explicit_condition}
       confidence: 0.85
     - id: condition.explicit_under
       enabled: true
       priority: 90
       matcher: {type: regex, pattern: '在(?P<condition>[^，。；]{1,80})条件下', flags: []}
-      conditions: {unit_types: [title, passage, table_cell, caption]}
+      conditions: {unit_types: [title, passage]}
       action: {type: create_constraint_candidate, target: explicit_condition}
       confidence: 0.85
     - id: condition.when
       enabled: true
       priority: 85
       matcher: {type: regex, pattern: '当(?P<condition>[^，。；]{1,80})时', flags: []}
-      conditions: {unit_types: [title, passage, table_cell, caption]}
+      conditions: {unit_types: [title, passage]}
       action: {type: create_constraint_candidate, target: explicit_condition}
       confidence: 0.85
+    - id: condition.named_value
+      enabled: true
+      priority: 88
+      matcher: {type: regex, pattern: '(?P<kind>焊接电流|电弧电压|保护气体|焊丝|焊接位置|接头|材料|试验)\s*(?:为|达到|低于|高于)\s*(?P<condition>[^，。；]{1,40})', flags: []}
+      conditions: {unit_types: [title, passage]}
+      action: {type: create_constraint_candidate, target: named_condition}
+      confidence: 0.88
     - id: condition.other_equal
       enabled: true
       priority: 85
       matcher: {type: keywords, mode: any, values: ["其他条件相同", "在其他条件相同时"]}
-      conditions: {unit_types: [passage, table_cell]}
+      conditions: {unit_types: [passage]}
       action: {type: create_constraint_candidate, target: explicit_condition}
       confidence: 0.8
   rule_language:
@@ -73,14 +80,14 @@ groups:
       enabled: true
       priority: 90
       matcher: {type: regex, pattern: '随着.+(?:增加|增大|提高|减少|减小|降低)', flags: []}
-      conditions: {unit_types: [passage, table_cell, caption]}
+      conditions: {unit_types: [passage]}
       action: {type: add_role_candidate, target: rule}
       confidence: 0.85
     - id: rule.causal_result
       enabled: true
       priority: 80
-      matcher: {type: regex, pattern: '.+(?:将|会|可|能).+(?:形成|产生|生成|出现|增加|减少|提高|降低)', flags: []}
-      conditions: {unit_types: [passage, table_cell]}
+      matcher: {type: regex, pattern: '.+?(?:将|会|可|能)(?:会)?(?:[^，。；]{0,80}?)(?:形成|产生|生成|出现|增加|减少|提高|降低)', flags: []}
+      conditions: {unit_types: [passage]}
       action: {type: add_role_candidate, target: rule}
       confidence: 0.78
     - id: rule.table_evidence
@@ -90,11 +97,11 @@ groups:
       conditions: {unit_types: [passage]}
       action: {type: add_role_candidate, target: rule}
       confidence: 0.83
-  ontology_language:
-    - id: ontology.classification
+  structured_language:
+    - id: structured.classification
       enabled: true
       priority: 90
       matcher: {type: regex, pattern: '(?P<subject>[^，。；]{1,40})(?:可|可以)?分为(?P<classes>[^。；]{1,100})', flags: []}
-      conditions: {unit_types: [passage, caption]}
-      action: {type: add_role_candidate, target: ontology}
+      conditions: {unit_types: [passage]}
+      action: {type: add_role_candidate, target: structured_candidate}
       confidence: 0.90

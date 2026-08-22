@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Constella · Context Builder 审查</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><strong>Constella</strong><span>Context Builder 审查台</span></div>
+    <small id="load-status">正在读取输出文件…</small>
+  </header>
+  <main>
+    <section id="summary" class="summary" aria-label="构建摘要"></section>
+    <nav class="tabs" aria-label="审查内容">
+      <button class="tab active" data-tab="structure">文档结构</button>
+      <button class="tab" data-tab="assets">图表与公式</button>
+      <button class="tab" data-tab="packages">文本包</button>
+      <button class="tab" data-tab="conditions">条件与歧义</button>
+    </nav>
+    <section id="structure" class="panel active"></section>
+    <section id="assets" class="panel"></section>
+    <section id="packages" class="panel"></section>
+    <section id="conditions" class="panel"></section>
+  </main>
+  <template id="empty-template"><div class="empty">没有符合当前筛选条件的结果。</div></template>
+  <script src="/app.js"></script>
+</body>
+</html>

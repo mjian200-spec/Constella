@@ -9,6 +9,7 @@ from typing import Any
 class PipelineRuntime:
     config_dir: Path
     use_llm: bool = False
+    llm_max_batches: int | None = None
     model_config: dict[str, Any] = field(default_factory=dict)
     run_events: list[dict[str, Any]] = field(default_factory=list)
 

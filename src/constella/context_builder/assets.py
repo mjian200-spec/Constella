@@ -1,147 +1,130 @@
 from __future__ import annotations
 
-from html.parser import HTMLParser
 import re
+from difflib import SequenceMatcher
 
 from .cleaning import ordered_units
-from .models import Ambiguity, DocumentGraph, PipelineRuntime, SourceRef, Unit
+from .models import DocumentGraph, PipelineRuntime
 from .pattern_engine import PatternEngine
 
 
-class _TableParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.rows: list[list[str]] = []
-        self.current_row: list[str] | None = None
-        self.current_cell: list[str] | None = None
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "tr": self.current_row = []
-        if tag in {"td", "th"}: self.current_cell = []
-
-    def handle_data(self, data):
-        if self.current_cell is not None: self.current_cell.append(data)
-
-    def handle_endtag(self, tag):
-        if tag in {"td", "th"} and self.current_row is not None and self.current_cell is not None:
-            self.current_row.append("".join(self.current_cell).strip())
-            self.current_cell = None
-        if tag == "tr" and self.current_row is not None:
-            self.rows.append(self.current_row)
-            self.current_row = None
+ASSET_TYPES = {"figure", "table", "formula"}
 
 
 def build_asset_structure(graph: DocumentGraph, runtime: PipelineRuntime, patterns: PatternEngine) -> None:
-    labels: dict[str, list[str]] = {}
+    """Link text to complete assets only; no table cells or image subparts are invented."""
     order = ordered_units(graph)
-    for position, unit_id in enumerate(order):
+    _label_formulas(graph, order)
+    labels = _asset_labels(graph)
+    positions = {unit_id: index for index, unit_id in enumerate(order)}
+    for unit_id in order:
         unit = graph.units[unit_id]
-        if unit.type == "formula":
-            _label_and_expand_formula(graph, unit, [graph.units[item] for item in order[max(0, position - 3):position]])
-    for unit in list(graph.units.values()):
-        label = unit.attributes.get("asset_label")
-        if label:
-            labels.setdefault(label, []).append(unit.id)
-        if unit.type == "table":
-            _expand_table(graph, unit)
-        if unit.type in {"table", "figure"}:
-            _add_caption(graph, unit)
-    for unit_id in ordered_units(graph):
-        unit = graph.units[unit_id]
-        if unit.type not in {"passage", "title", "caption"} or not isinstance(unit.content, str):
+        if unit.type not in {"passage", "title"} or not isinstance(unit.content, str):
             continue
         candidates = _references(unit.content)
         unit.attributes["asset_reference_candidates"] = candidates
         for candidate in candidates:
-            matched = labels.get(candidate["label"], [])
-            if len(matched) == 1:
-                graph.add_relation(unit.id, matched[0], "MENTIONS", confidence=candidate["confidence"], evidence=[candidate["pattern_id"]])
-                if graph.units[matched[0]].type == "formula":
-                    graph.add_relation(unit.id, matched[0], "ALIGNS_WITH", confidence=candidate["confidence"], evidence=[candidate["pattern_id"]])
-            elif len(matched) != 1:
-                ambiguity_id = f"amb_asset_{unit.id}_{candidate['label']}"
-                graph.ambiguities[ambiguity_id] = Ambiguity(
-                    ambiguity_id, "asset_reference", [unit.id], matched,
-                    f"Reference {candidate['label']} has {len(matched)} asset candidates", "open",
-                )
-        if re.search(r"曲线\s*\d+|区域\s*[ⅠⅡⅢIVX]+", unit.content):
-            ambiguity_id = f"amb_image_parts_{unit.id}"
-            graph.ambiguities[ambiguity_id] = Ambiguity(
-                ambiguity_id, "figure_substructure_unavailable", [unit.id], [],
-                "MinerU input has no reliable curve or region structure; image retained whole by project decision", "open",
-            )
-    runtime.record(stage="build_asset_structure", assets=sum(u.type in {"table", "figure", "formula"} for u in graph.units.values()))
+            matches = labels.get(candidate["label"], [])
+            if len(matches) == 1:
+                _link(graph, unit.id, matches[0], candidate["confidence"], candidate["pattern_id"])
+        _link_relative_reference(graph, unit, order, positions)
+        _link_caption_description(graph, unit)
+    runtime.record(stage="build_asset_structure", assets=sum(unit.type in ASSET_TYPES for unit in graph.units.values()))
+
+
+def _asset_labels(graph: DocumentGraph) -> dict[str, list[str]]:
+    labels: dict[str, list[str]] = {}
+    for unit in graph.units.values():
+        label = unit.attributes.get("asset_label")
+        if label:
+            labels.setdefault(label, []).append(unit.id)
+    return labels
+
+
+def _label_formulas(graph: DocumentGraph, order: list[str]) -> None:
+    for position, unit_id in enumerate(order):
+        formula = graph.units[unit_id]
+        if formula.type != "formula":
+            continue
+        labels: set[str] = set()
+        for previous_id in order[max(0, position - 3):position]:
+            previous = graph.units[previous_id]
+            if isinstance(previous.content, str):
+                labels.update(item["label"] for item in _references(previous.content) if item["asset_type"] == "formula")
+        if len(labels) == 1:
+            formula.attributes["asset_label"] = labels.pop()
 
 
 def _references(text: str) -> list[dict[str, object]]:
     candidates: list[dict[str, object]] = []
-    for kind, token, pattern in (("figure", "图", r"图\s*(\d+)\s*[-—－]\s*(\d+)"), ("table", "表", r"表\s*(\d+)\s*[-—－]\s*(\d+)")):
+    for kind, token, pattern in (
+        ("figure", "图", r"图\s*(\d+)\s*[-—－]\s*(\d+)"),
+        ("table", "表", r"表\s*(\d+)\s*[-—－]\s*(\d+)"),
+        ("formula", "式", r"式\s*[（(]?\s*(\d+)\s*[-—－]\s*(\d+)\s*[）)]?"),
+    ):
         for hit in re.finditer(pattern, text):
             candidates.append({"asset_type": kind, "label": f"{token}{hit.group(1)}-{hit.group(2)}", "pattern_id": f"asset_reference.explicit_{kind}", "confidence": 0.99})
-    for hit in re.finditer(r"式\s*[（(]?\s*(\d+)\s*[-—－]\s*(\d+)\s*[）)]?", text):
-        candidates.append({"asset_type": "formula", "label": f"式{hit.group(1)}-{hit.group(2)}", "pattern_id": "asset_reference.explicit_formula", "confidence": 0.99})
     return candidates
 
 
-def _expand_table(graph: DocumentGraph, table: Unit) -> None:
-    body = table.attributes.get("table_body")
-    if not isinstance(body, str) or not body.strip():
+def _link_relative_reference(graph: DocumentGraph, unit, order: list[str], positions: dict[str, int]) -> None:
+    for direction, pattern, expected_type in (
+        (-1, r"(?:上图|前图|上述图)", "figure"), (1, r"(?:下图|后图)", "figure"),
+        (-1, r"(?:上表|前表|上述表)", "table"), (1, r"(?:下表|后表)", "table"),
+    ):
+        if not re.search(pattern, unit.content):
+            continue
+        candidate = _nearest_asset(graph, unit.id, order, positions, direction, expected_type)
+        if candidate:
+            _link(graph, unit.id, candidate, 0.7, "asset_reference.relative")
+
+
+def _nearest_asset(graph: DocumentGraph, source_id: str, order: list[str], positions: dict[str, int], direction: int, expected_type: str) -> str | None:
+    source_path = graph.units[source_id].attributes.get("section_path", [])
+    index = positions[source_id] + direction
+    while 0 <= index < len(order):
+        candidate = graph.units[order[index]]
+        if candidate.type == expected_type:
+            return candidate.id if candidate.attributes.get("section_path", []) == source_path else None
+        if candidate.type == "title" and candidate.attributes.get("section_path", []) != source_path:
+            return None
+        index += direction
+    return None
+
+
+def _link_caption_description(graph: DocumentGraph, unit) -> None:
+    """Match descriptive text to one clearly superior caption; otherwise retain candidates only."""
+    if _has_asset_link(graph, unit.id):
         return
-    parser = _TableParser(); parser.feed(body)
-    logical_rows = _split_repeated_table_groups(parser.rows)
-    max_columns = max((len(row) for row in logical_rows), default=0)
-    for column_index in range(max_columns):
-        column_id = f"{table.id}_column_{column_index:02d}"
-        values = [row[column_index] if column_index < len(row) else "" for row in logical_rows]
-        graph.units[column_id] = Unit(column_id, "table_column", values, table.source, attributes={"column_index": column_index, "asset_id": table.id})
-        graph.add_relation(table.id, column_id, "CONTAINS", confidence=1.0, evidence=[table.id])
-    for row_index, values in enumerate(logical_rows):
-        row_id = f"{table.id}_row_{row_index:02d}"
-        row = Unit(row_id, "table_row", values, table.source, role=["support"] if row_index == 0 else [], attributes={"row_index": row_index, "asset_id": table.id})
-        graph.units[row_id] = row
-        graph.add_relation(table.id, row_id, "CONTAINS", confidence=1.0, evidence=[table.id])
-        for column_index, value in enumerate(values):
-            cell_id = f"{row_id}_cell_{column_index:02d}"
-            cell = Unit(cell_id, "table_cell", value, table.source, attributes={"row_index": row_index, "column_index": column_index, "asset_id": table.id})
-            graph.units[cell_id] = cell
-            graph.add_relation(row_id, cell_id, "CONTAINS", confidence=1.0, evidence=[table.id])
-
-
-def _split_repeated_table_groups(rows: list[list[str]]) -> list[list[str]]:
-    """Expand side-by-side repeated table headers into independent logical rows."""
-    if not rows or len(rows[0]) < 2 or len(rows[0]) % 2:
-        return rows
-    width = len(rows[0]) // 2
-    if rows[0][:width] != rows[0][width:]:
-        return rows
-    logical = [rows[0][:width]]
-    for row in rows[1:]:
-        for offset in range(0, len(row), width):
-            part = row[offset:offset + width]
-            if part and any(value.strip() for value in part):
-                logical.append(part)
-    return logical
-
-
-def _add_caption(graph: DocumentGraph, asset: Unit) -> None:
-    caption = asset.attributes.get("caption")
-    if not caption:
+    source_text = _normalise(unit.content)
+    if len(source_text) < 8:
         return
-    caption_id = f"{asset.id}_caption"
-    graph.units[caption_id] = Unit(caption_id, "caption", caption, asset.source, role=["support"], attributes={"asset_id": asset.id})
-    graph.add_relation(asset.id, caption_id, "CONTAINS", confidence=1.0, evidence=[asset.id])
+    source_path = unit.attributes.get("section_path", [])
+    scored: list[tuple[float, str]] = []
+    for asset in graph.units.values():
+        if asset.type not in {"figure", "table"} or asset.attributes.get("section_path", []) != source_path:
+            continue
+        caption = _normalise(str(asset.attributes.get("caption", "")))
+        if caption:
+            score = SequenceMatcher(None, source_text, caption).ratio()
+            if score >= 0.65:
+                scored.append((score, asset.id))
+    scored.sort(reverse=True)
+    unit.attributes["caption_match_candidates"] = [{"asset_id": asset_id, "score": round(score, 3)} for score, asset_id in scored[:3]]
+    if len(scored) == 1 or (len(scored) > 1 and scored[0][0] - scored[1][0] >= 0.2):
+        _link(graph, unit.id, scored[0][1], scored[0][0], "asset_reference.caption_description")
 
 
-def _label_and_expand_formula(graph: DocumentGraph, formula: Unit, previous_units: list[Unit]) -> None:
-    labels = []
-    for unit in previous_units:
-        if isinstance(unit.content, str):
-            labels.extend(candidate["label"] for candidate in _references(unit.content) if candidate["asset_type"] == "formula")
-    if len(set(labels)) == 1:
-        formula.attributes["asset_label"] = labels[0]
-    expression = formula.content if isinstance(formula.content, str) else ""
-    variables = sorted(set(re.findall(r"(?<![A-Za-z])([A-Za-z](?:_[A-Za-z0-9]+)?)(?![A-Za-z])", expression)))
-    for index, variable in enumerate(variables):
-        variable_id = f"{formula.id}_var_{index:02d}"
-        graph.units[variable_id] = Unit(variable_id, "formula_variable", variable, formula.source, attributes={"formula_id": formula.id})
-        graph.add_relation(formula.id, variable_id, "CONTAINS", confidence=1.0, evidence=[formula.id])
+def _normalise(text: str) -> str:
+    return re.sub(r"[\W_图表式]", "", text).lower()
+
+
+def _has_asset_link(graph: DocumentGraph, source_id: str) -> bool:
+    return any(relation.source_id == source_id and relation.type == "MENTIONS" for relation in graph.relations)
+
+
+def _link(graph: DocumentGraph, source_id: str, target_id: str, confidence: float, evidence: str) -> None:
+    if not _has_asset_link(graph, source_id):
+        graph.add_relation(source_id, target_id, "MENTIONS", confidence=confidence, evidence=[evidence])
+    if graph.units[target_id].type == "formula":
+        graph.add_relation(source_id, target_id, "ALIGNS_WITH", confidence=confidence, evidence=[evidence])

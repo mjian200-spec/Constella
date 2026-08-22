@@ -16,9 +16,10 @@ def main() -> int:
     parser.add_argument("input_path")
     parser.add_argument("--output-dir", default="outputs/context_builder")
     parser.add_argument("--config-dir", default=str(ROOT / "configs" / "context_builder"))
-    parser.add_argument("--use-llm", action="store_true", help="Enable only after the vLLM server is running.")
+    parser.add_argument("--use-llm", action="store_true", help="Classify only low-confidence route candidates through vLLM.")
+    parser.add_argument("--llm-max-batches", type=int, help="Limit LLM batches for a real-input trial; omit to classify every candidate.")
     args = parser.parse_args()
-    runtime = load_runtime(args.config_dir, use_llm=args.use_llm)
+    runtime = load_runtime(args.config_dir, use_llm=args.use_llm, llm_max_batches=args.llm_max_batches)
     graph = run_context_builder(args.input_path, args.output_dir, runtime)
     print(f"Built {len(graph.units)} units, {len(graph.relations)} relations and {len(graph.constraints)} constraints.")
     return 0
