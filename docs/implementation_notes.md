@@ -17,12 +17,15 @@
   optional low-confidence routing and ambiguity resolution; no model call is
   made unless a later routing policy explicitly selects a low-confidence batch.
 
-## Runtime limitation recorded on 2026-08-22
+## vLLM runtime record on 2026-08-22
 
 `vllm==0.19.0` installs correctly and recognises the local model as
-`Qwen3_5ForConditionalGeneration`. The service could not start because both
-available GPUs were already occupied: GPU 0 had 9,025 MiB free and GPU 1 had
-6,267 MiB free, while vLLM requested about 85.47 GiB at its default 0.9 memory
-utilisation. No unsafe memory reduction, eviction, or use of another process's
-GPU allocation was attempted. Free a GPU (or deliberately choose a smaller
-memory/sequence-length configuration) before launching `scripts/serve_qwen.sh`.
+`Qwen3_5ForConditionalGeneration`. The first service launch could not start
+because both GPUs were occupied: GPU 0 had 9,025 MiB free and GPU 1 had 6,267
+MiB free, while vLLM requested about 85.47 GiB at its default 0.9 memory
+utilisation. No unsafe memory reduction was attempted.
+
+After the user authorised termination of the three existing vLLM engine
+processes, `scripts/serve_qwen.sh` started successfully on GPU 0. The
+OpenAI-compatible model-list endpoint and a `chat/completions` request both
+completed successfully at `http://127.0.0.1:8000/v1`.
