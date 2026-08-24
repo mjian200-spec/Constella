@@ -64,7 +64,7 @@ groups:
     - id: condition.named_value
       enabled: true
       priority: 88
-      matcher: {type: regex, pattern: '(?P<kind>焊接电流|电弧电压|保护气体|焊丝|焊接位置|接头|材料|试验)\s*(?:为|达到|低于|高于)\s*(?P<condition>[^，。；]{1,40})', flags: []}
+      matcher: {type: regex, pattern: '(?P<kind>焊接电流|电流|电弧电压|电压|保护气体|焊丝|焊接位置|接头|材料|母材|板厚|厚度|弧长|焊接速度|送丝速度|脉冲电流|脉冲时间|温度|湿度|间隙|热输入|频率|极性)\s*(?:为|达到|低于|高于|超过|不超过|不低于|小于|大于|增加到|降低到|提高到|减少到)\s*(?P<condition>[^，。；]{1,40})', flags: []}
       conditions: {unit_types: [title, passage]}
       action: {type: create_constraint_candidate, target: named_condition}
       confidence: 0.88
@@ -76,17 +76,38 @@ groups:
       action: {type: create_constraint_candidate, target: explicit_condition}
       confidence: 0.8
   rule_language:
+    - id: rule.normative_requirement
+      enabled: true
+      priority: 95
+      matcher: {type: regex, pattern: '(?:必须|应当|应该|不得|不应|不宜|切忌|要求|注意|应特别注意|避免|防止|以免|否则)', flags: []}
+      conditions: {unit_types: [passage]}
+      action: {type: add_role_candidate, target: rule}
+      confidence: 0.90
+    - id: rule.conditional_result
+      enabled: true
+      priority: 92
+      matcher: {type: regex, pattern: '(?:如果|若|当)[^。；]{1,100}(?:则|就|会|将|可|能|容易|难以|不能|必须|应|不宜|避免|防止)|在[^。；]{1,80}(?:条件下|情况下|时)[^。；]{0,40}(?:则|就|会|将|可|能|容易|难以|不能|必须|应|不宜|避免|防止)', flags: []}
+      conditions: {unit_types: [passage]}
+      action: {type: add_role_candidate, target: rule}
+      confidence: 0.88
+    - id: rule.threshold_range
+      enabled: true
+      priority: 88
+      matcher: {type: regex, pattern: '(?:(?:超过|低于|达到|范围为|范围是|不超过|不低于|小于|大于|至少|最多|临界)\s*(?:[0-9$]|几万|几十)|[0-9$][^。；]{0,20}(?:以上|以下))', flags: []}
+      conditions: {unit_types: [passage]}
+      action: {type: add_role_candidate, target: rule}
+      confidence: 0.84
     - id: rule.monotonic_change
       enabled: true
       priority: 90
-      matcher: {type: regex, pattern: '随着.+(?:增加|增大|提高|减少|减小|降低)', flags: []}
+      matcher: {type: regex, pattern: '(?:随着|当)[^，。；]{0,80}(?:增加|增大|提高|减少|减小|降低)(?:时|，|后|则|将|会|可|能)?|(?:越[^，。；]{1,30}越[^，。；]{1,30}(?:增加|增大|提高|减少|减小|降低))', flags: []}
       conditions: {unit_types: [passage]}
       action: {type: add_role_candidate, target: rule}
       confidence: 0.85
     - id: rule.causal_result
       enabled: true
       priority: 80
-      matcher: {type: regex, pattern: '.+?(?:将|会|可|能)(?:会)?(?:[^，。；]{0,80}?)(?:形成|产生|生成|出现|增加|减少|提高|降低)', flags: []}
+      matcher: {type: regex, pattern: '(?:由于[^。；]{1,100}(?:因此|所以|从而)|因为[^。；]{1,100}所以|[^。；]{1,100}(?:导致|使得|从而))[^。；]{0,100}(?:形成|产生|生成|出现|增加|减少|提高|降低|改善|恶化)|(?:将|会|可|能)(?:会)?[^，。；]{0,80}(?:形成|产生|生成|增加|减少|提高|降低|改善|恶化)', flags: []}
       conditions: {unit_types: [passage]}
       action: {type: add_role_candidate, target: rule}
       confidence: 0.78

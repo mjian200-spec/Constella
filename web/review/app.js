@@ -49,8 +49,15 @@ function renderStructure() {
 function renderAssetDetail(item) {
   const incoming = state.graph.relations.filter((relation) => relation.target_id === item.id && relation.type === "MENTIONS");
   const caption = item.attributes?.caption || "（无题注）";
-  const image = item.type === "figure" && item.source?.asset_path ? `<img class="asset-image" src="/assets/${item.id}" alt="${escapeHtml(caption)}" onerror="this.remove()">` : "";
-  const body = item.type === "table" ? `<div class="content table-content">${escapeHtml(item.attributes?.table_body || item.content)}</div>` : `<div class="content">${escapeHtml(item.type === "figure" ? caption : text(item.content))}</div>`;
+  const image = ["figure", "table"].includes(item.type) && item.source?.asset_path
+    ? `<img class="asset-image" src="/assets/${encodeURIComponent(item.id)}" alt="${escapeHtml(caption)}" onerror="this.remove()">`
+    : "";
+  const tableBody = item.attributes?.table_body || item.content;
+  // MinerU's table_body is generated HTML. It is part of the local build output,
+  // so keep the table structure visible instead of displaying escaped markup.
+  const body = item.type === "table"
+    ? `<div class="content table-content">${typeof tableBody === "string" && tableBody.includes("<table") ? tableBody : escapeHtml(text(tableBody))}</div>`
+    : `<div class="content">${escapeHtml(item.type === "figure" ? caption : text(item.content))}</div>`;
   const links = incoming.map((relation) => `<button data-jump="${relation.source_id}">${relation.source_id} · ${escapeHtml(relation.evidence.join(", ") || "显式关联")}</button>`).join("") || "<span class=meta>没有正文资产关联。</span>";
   return `<h2>${item.id} <span class="badge">${item.type}</span></h2><p class="meta">${pageOf(item)} · ${escapeHtml((item.attributes?.section_path || []).join(" / ") || "无章节")}</p><p><b>题注：</b>${escapeHtml(caption)}</p>${image}${body}<div class="group"><h3>引用它的正文 Unit（${incoming.length}）</h3><div class="links">${links}</div></div>`;
 }
@@ -67,6 +74,12 @@ function renderAssets() {
     bindJumps();
   };
   $("#asset-query").oninput = refresh; $("#asset-type").onchange = refresh; refresh();
+}
+function selectAsset(assetId) {
+  if (!unit(assetId)) return;
+  state.selected.asset = assetId;
+  document.querySelector('[data-tab="assets"]').click();
+  renderAssets();
 }
 function renderPackageDetail(item) {
   const renderUnits = (ids) => ids.map((id) => unit(id) ? `<div class="content"><b>${id}</b> <span class="badge">${unit(id).type}</span><br>${escapeHtml(text(unit(id).content))}</div>` : `<div class="content">${id}（未找到）</div>`).join("") || "<span class=meta>无</span>";
@@ -94,7 +107,7 @@ function renderConditions() {
   $("#conditions").querySelectorAll("[data-condition]").forEach((button) => button.onclick = () => { const item = state.graph.constraints[button.dataset.condition]; $("#condition-detail").innerHTML = `<h2>${item.id}</h2><p><span class="badge">${escapeHtml(item.type)}</span> <span class="badge">${escapeHtml(item.status)}</span></p><div class="content">${escapeHtml(text(item.value))}</div><div class="group"><h3>来源与作用域</h3><p>${item.source_id}：${escapeHtml(text(unit(item.source_id)?.content))}</p><p class="meta">${item.scope?.start_unit_id || "?"} → ${item.scope?.end_unit_id || "?"}</p></div>`; });
 }
 function bindJumps() {
-  document.querySelectorAll("[data-asset]").forEach((button) => button.onclick = () => { state.selected.asset = button.dataset.asset; document.querySelector('[data-tab="assets"]').click(); });
+  document.querySelectorAll("[data-asset]").forEach((button) => button.onclick = () => selectAsset(button.dataset.asset));
   document.querySelectorAll("[data-jump]").forEach((button) => button.onclick = () => { const item = unit(button.dataset.jump); if (!item) return; alert(`${item.id}\n\n${text(item.content)}`); });
 }
 function activateTabs() { document.querySelectorAll(".tab").forEach((button) => button.onclick = () => { document.querySelectorAll(".tab,.panel").forEach((element) => element.classList.remove("active")); button.classList.add("active"); $(`#${button.dataset.tab}`).classList.add("active"); }); }

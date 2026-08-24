@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Constella · 规则抽取审查</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header><div><strong>Constella</strong><span>规则抽取审查台</span></div><small id="status">正在读取实时状态…</small></header>
+  <main>
+    <section id="metrics" class="metrics"></section>
+    <section id="progress" class="progress" aria-label="抽取进度"></section>
+    <section class="toolbar"><input id="query" placeholder="按包编号、章节、正文搜索"><select id="filter"><option value="">全部状态</option><option>pending</option><option>generating</option><option>reflecting</option><option>applying_reflection</option><option>parsing</option><option>writing_graph</option><option>success</option><option>no_rule</option><option>failed</option></select><label><input id="live" type="checkbox" checked> 自动刷新进度</label><button id="refresh-detail" type="button">刷新当前详情</button></section>
+    <section class="layout"><aside id="list" class="list"></aside><article id="detail" class="detail"><div class="empty">从左侧选择一个上下文包。</div></article></section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

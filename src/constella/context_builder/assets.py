@@ -27,6 +27,7 @@ def build_asset_structure(graph: DocumentGraph, runtime: PipelineRuntime, patter
             matches = labels.get(candidate["label"], [])
             if len(matches) == 1:
                 _link(graph, unit.id, matches[0], candidate["confidence"], candidate["pattern_id"])
+        _link_introduced_formula(graph, unit, order, positions)
         _link_relative_reference(graph, unit, order, positions)
         _link_caption_description(graph, unit)
     runtime.record(stage="build_asset_structure", assets=sum(unit.type in ASSET_TYPES for unit in graph.units.values()))
@@ -42,10 +43,25 @@ def _asset_labels(graph: DocumentGraph) -> dict[str, list[str]]:
 
 
 def _label_formulas(graph: DocumentGraph, order: list[str]) -> None:
+    """Label formulas from their own equation tag, not from a nearby citation.
+
+    A passage usually cites an equation *before* it appears.  Using that
+    citation to label the next formula shifts labels whenever a paragraph
+    cites one equation and then introduces another.  The equation's ``tag``
+    is the authoritative source whenever MinerU preserved it.
+    """
     for position, unit_id in enumerate(order):
         formula = graph.units[unit_id]
         if formula.type != "formula":
             continue
+        label = _formula_tag(str(formula.content or ""))
+        if label:
+            formula.attributes["asset_label"] = label
+            formula.attributes["asset_label_source"] = "equation_tag"
+            _link_symbol_explanations(graph, formula.id, order, position)
+            continue
+        # Some OCR equations have no recoverable tag.  Keep the conservative
+        # local fallback, but make its provenance visible for review.
         labels: set[str] = set()
         for previous_id in order[max(0, position - 3):position]:
             previous = graph.units[previous_id]
@@ -53,6 +69,40 @@ def _label_formulas(graph: DocumentGraph, order: list[str]) -> None:
                 labels.update(item["label"] for item in _references(previous.content) if item["asset_type"] == "formula")
         if len(labels) == 1:
             formula.attributes["asset_label"] = labels.pop()
+            formula.attributes["asset_label_source"] = "nearby_reference_fallback"
+        _link_symbol_explanations(graph, formula.id, order, position)
+
+
+def _formula_tag(text: str) -> str | None:
+    hit = re.search(r"\\tag\s*\{?\s*(\d+)\s*[-—－]\s*(\d+)\s*\}?", text)
+    return f"式{hit.group(1)}-{hit.group(2)}" if hit else None
+
+
+def _link_symbol_explanations(graph: DocumentGraph, formula_id: str, order: list[str], position: int) -> None:
+    """Link the contiguous, source-text symbol glossary following a formula.
+
+    These are retained as passages; this relation merely records that they
+    explain the complete formula.  It does not claim to parse variables.
+    """
+    for unit_id in order[position + 1:]:
+        unit = graph.units[unit_id]
+        if unit.type == "title":
+            break
+        if unit.type != "passage":
+            continue
+        text = str(unit.content or "").strip()
+        if _is_symbol_explanation(text):
+            graph.add_relation(
+                formula_id, unit_id, "EXPLAINED_BY", confidence=0.99,
+                evidence=["formula.symbol_explanation"],
+            )
+            continue
+        if text and "noise" not in unit.role:
+            break
+
+
+def _is_symbol_explanation(text: str) -> bool:
+    return bool(re.match(r"^(?:式中\s*)?.{1,120}?(?:——|—|-{2,})", text) or re.match(r"^其他符号.{0,40}式", text))
 
 
 def _references(text: str) -> list[dict[str, object]]:
@@ -77,6 +127,33 @@ def _link_relative_reference(graph: DocumentGraph, unit, order: list[str], posit
         candidate = _nearest_asset(graph, unit.id, order, positions, direction, expected_type)
         if candidate:
             _link(graph, unit.id, candidate, 0.7, "asset_reference.relative")
+
+
+def _link_introduced_formula(graph: DocumentGraph, unit, order: list[str], positions: dict[str, int]) -> None:
+    """Link a formula explicitly introduced by the immediately preceding text.
+
+    Engineering prose often ends with “其关系式为” and places the equation in
+    the next MinerU block, without repeating an equation number.  This is a
+    source-local structural cue, not an inferred mathematical relationship.
+    """
+    text = str(unit.content or "").strip()
+    if not re.search(r"(?:关系式|表达式|方程|公式|计算式)(?:如下|为|是)?[：:]?$", text):
+        return
+    index = positions[unit.id] + 1
+    source_path = unit.attributes.get("section_path", [])
+    while index < len(order):
+        candidate = graph.units[order[index]]
+        if candidate.type == "title" or candidate.attributes.get("section_path", []) != source_path:
+            return
+        if candidate.type == "formula":
+            graph.add_relation(
+                unit.id, candidate.id, "INTRODUCES", confidence=0.98,
+                evidence=["asset_reference.introduced_formula"],
+            )
+            return
+        if candidate.type == "passage" and str(candidate.content or "").strip() and "noise" not in candidate.role:
+            return
+        index += 1
 
 
 def _nearest_asset(graph: DocumentGraph, source_id: str, order: list[str], positions: dict[str, int], direction: int, expected_type: str) -> str | None:
@@ -119,12 +196,16 @@ def _normalise(text: str) -> str:
     return re.sub(r"[\W_图表式]", "", text).lower()
 
 
-def _has_asset_link(graph: DocumentGraph, source_id: str) -> bool:
-    return any(relation.source_id == source_id and relation.type == "MENTIONS" for relation in graph.relations)
+def _has_asset_link(graph: DocumentGraph, source_id: str, target_id: str | None = None) -> bool:
+    return any(
+        relation.source_id == source_id and relation.type == "MENTIONS"
+        and (target_id is None or relation.target_id == target_id)
+        for relation in graph.relations
+    )
 
 
 def _link(graph: DocumentGraph, source_id: str, target_id: str, confidence: float, evidence: str) -> None:
-    if not _has_asset_link(graph, source_id):
+    if not _has_asset_link(graph, source_id, target_id):
         graph.add_relation(source_id, target_id, "MENTIONS", confidence=confidence, evidence=[evidence])
     if graph.units[target_id].type == "formula":
         graph.add_relation(source_id, target_id, "ALIGNS_WITH", confidence=confidence, evidence=[evidence])

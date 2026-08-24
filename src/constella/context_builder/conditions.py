@@ -29,7 +29,11 @@ def detect_and_align_conditions(graph: DocumentGraph, runtime: PipelineRuntime, 
 
 
 def _condition_type(value: str) -> str:
-    for token in ("焊接电流", "电弧电压", "保护气体", "焊丝", "焊接位置", "接头", "材料", "试验"):
+    for token in (
+        "焊接电流", "电流", "电弧电压", "电压", "保护气体", "焊丝", "焊接位置",
+        "接头", "材料", "母材", "板厚", "厚度", "弧长", "焊接速度", "送丝速度",
+        "脉冲电流", "脉冲时间", "温度", "湿度", "间隙", "热输入", "频率", "极性", "试验",
+    ):
         if token in value:
             return token
     if re.search(r"\d+(?:\.\d+)?\s*(?:g|MPa|L\s*/\s*min|A|V|mm|%)", value, re.I):

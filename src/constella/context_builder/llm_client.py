@@ -13,7 +13,7 @@ class LLMClient:
         self.models = models
         self.event_sink = event_sink or (lambda **_: None)
 
-    def complete(self, model_key: str, messages: list[dict[str, str]], response_format: dict | None = None, **overrides: Any) -> dict[str, Any]:
+    def complete(self, model_key: str, messages: list[dict[str, Any]], response_format: dict | None = None, **overrides: Any) -> dict[str, Any]:
         config = self.models[model_key]
         prompt_id = overrides.pop("prompt_id", None)
         prompt_version = overrides.pop("prompt_version", None)
@@ -22,6 +22,7 @@ class LLMClient:
             "model": overrides.pop("model", config["model"]), "messages": messages,
             "temperature": overrides.pop("temperature", config.get("temperature", 0)), **overrides,
         }
+        payload.update(config.get("request_options", {}))
         if response_format: payload["response_format"] = response_format
         request = Request(
             config["base_url"].rstrip("/") + "/chat/completions",

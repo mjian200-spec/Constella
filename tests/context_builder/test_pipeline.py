@@ -51,7 +51,9 @@ class RealGMAWPipelineTests(unittest.TestCase):
 
     def test_real_output_contract(self):
         self.assertEqual(len(self.raw_blocks) - 131, len(self.graph.units))
-        self.assertEqual(sum("rule" in unit.role for unit in self.graph.units.values()), len(self.packages))
+        rule_packages = [item for item in self.packages if item["attributes"]["package_type"] == "rule"]
+        self.assertEqual(sum("rule" in unit.role for unit in self.graph.units.values()), len(rule_packages))
+        self.assertTrue(any(item["attributes"]["package_type"] == "formula_context" for item in self.packages))
         self.assertFalse(any(unit.type.startswith("table_") for unit in self.graph.units.values()))
         self.assertFalse(any(unit.type == "formula_variable" for unit in self.graph.units.values()))
         self.assertTrue(all(item.type == "condition_conflict" for item in self.graph.ambiguities.values()))
@@ -95,6 +97,31 @@ class RealGMAWPipelineTests(unittest.TestCase):
             if relation.source_id == "unit_002488" and relation.target_id == "unit_002491"
         }
         self.assertEqual({"MENTIONS", "ALIGNS_WITH"}, relation_types)
+        formula_package = next(item for item in self.packages if "unit_002491" in item["asset_part_ids"])
+        self.assertEqual("rule", formula_package["attributes"]["package_type"])
+        self.assertEqual(["unit_002488"], formula_package["core_unit_ids"])
+        self.assertEqual(["unit_002491"], formula_package["asset_part_ids"])
+        self.assertTrue({"unit_002492", "unit_002493"}.issubset(formula_package["support_unit_ids"]))
+        symbol_links = [
+            relation for relation in self.graph.relations
+            if relation.source_id == "unit_002491" and relation.type == "EXPLAINED_BY"
+        ]
+        self.assertEqual({"unit_002492", "unit_002493"}, {relation.target_id for relation in symbol_links})
+        self.assertTrue(all(relation.evidence == ["formula.symbol_explanation"] for relation in symbol_links))
+        self.assertIn("由式（2-8）可知", self.raw(304)["text"])
+        self.assertEqual("式2-8", self.unit(303).attributes["asset_label"])
+        self.assertEqual("式2-9", self.unit(305).attributes["asset_label"])
+        self.assertTrue(any(
+            relation.source_id == "unit_000304" and relation.target_id == "unit_000303"
+            and relation.type == "MENTIONS"
+            for relation in self.graph.relations
+        ))
+        self.assertIn("图2-25", self.raw(614)["text"])
+        self.assertIn("式（2-38）", self.raw(614)["text"])
+        self.assertEqual({"unit_000608", "unit_000615"}, {
+            relation.target_id for relation in self.graph.relations
+            if relation.source_id == "unit_000614" and relation.type == "MENTIONS"
+        })
         self.assertEqual("5. 细熔滴的冲击力", self.raw(641)["text"])
         self.assertEqual("图2-31 熔滴的冲击力", self.raw(644)["image_caption"][0])
         self.assertTrue(any(
@@ -102,6 +129,17 @@ class RealGMAWPipelineTests(unittest.TestCase):
             and relation.evidence == ["asset_reference.caption_description"]
             for relation in self.graph.relations
         ))
+
+    def test_real_formula_introduction_keeps_the_following_formula_in_the_package(self):
+        self.assertIn("则其关系式为", self.raw(1471)["text"])
+        self.assertEqual("formula", self.unit(1473).type)
+        self.assertTrue(any(
+            relation.source_id == "unit_001471" and relation.target_id == "unit_001473"
+            and relation.type == "INTRODUCES" and relation.evidence == ["asset_reference.introduced_formula"]
+            for relation in self.graph.relations
+        ))
+        package = next(item for item in self.packages if "unit_001471" in item["core_unit_ids"])
+        self.assertIn("unit_001473", package["asset_part_ids"])
 
     def test_real_relative_reference_and_direct_modal_result(self):
         self.assertIn("下表", self.raw(718)["text"])
@@ -114,6 +152,28 @@ class RealGMAWPipelineTests(unittest.TestCase):
         unit = self.unit(2522)
         self.assertIn("rule", unit.role)
         self.assertIn("rule.causal_result", unit.attributes["matched_pattern_ids"])
+
+    def test_real_normative_and_conditional_passages_are_rules_without_splitting(self):
+        for index, pattern_id in (
+            (1469, "rule.normative_requirement"),
+            (2255, "rule.conditional_result"),
+            (2535, "rule.normative_requirement"),
+            (3381, "rule.normative_requirement"),
+            (3553, "rule.normative_requirement"),
+            (3953, "rule.normative_requirement"),
+            (4344, "rule.normative_requirement"),
+        ):
+            unit = self.unit(index)
+            self.assertEqual("passage", unit.type)
+            self.assertIn("rule", unit.role)
+            self.assertIn(pattern_id, unit.attributes["matched_pattern_ids"])
+            self.assertEqual(1, len([item for item in self.packages if f"unit_{index:06d}" in item["core_unit_ids"]]))
+
+    def test_real_parameter_conditions_are_typed(self):
+        unit = self.unit(3539)
+        self.assertIn("condition.in_when", unit.attributes["matched_pattern_ids"])
+        constraints = [item for item in self.graph.constraints.values() if item.source_id == unit.id]
+        self.assertTrue(any(item.type in {"电压", "电流", "explicit_condition"} for item in constraints))
 
     def test_real_structured_candidate_output_uses_classification_source(self):
         self.assertIn("可分为钨极气体保护焊", self.raw(141)["text"])

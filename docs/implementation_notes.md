@@ -26,6 +26,13 @@
   from its containing title path. It deliberately excludes a condition found
   in the core rule passage itself, because downstream LLM extraction will
   interpret that sentence directly.
+- Formula labels use the equation's own `\\tag{chapter-number}` when present;
+  a nearby textual formula reference is only a traceable fallback for an
+  untagged OCR equation. A package that cites a formula includes the complete
+  formula asset plus its contiguous source-text symbol explanations. An
+  explicitly cited formula without a deterministic rule route receives a
+  separate `formula_context` package. This preserves the original explanation
+  text without pretending to identify variable roles.
 - The causal rule accepts both an intervening phrase (例如“将会显著增加”) and a
   direct modal-result expression (例如“将产生气孔”); the latter is covered by a
   dedicated regression test.
