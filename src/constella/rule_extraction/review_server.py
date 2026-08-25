@@ -43,6 +43,21 @@ class RuleReviewData:
         finally:
             connection.close()
 
+    def run_info(self) -> dict[str, Any] | None:
+        path = self.extraction_dir / "rule_extraction_state.sqlite3"
+        if not path.is_file():
+            return None
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        try:
+            row = connection.execute(
+                "SELECT run_id, status, started_at, completed_at, model "
+                "FROM runs ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            connection.close()
+
     def feedback(self) -> dict[str, dict[str, Any]]:
         if not self.feedback_path.is_file():
             return {}
@@ -58,17 +73,22 @@ class RuleReviewData:
 
     def summary(self) -> dict[str, Any]:
         run_id, states = self.states()
+        run = self.run_info()
         feedback = self.feedback()
         records = []
         for package in self.packages.values():
             state = states.get(package["id"], {})
+            rule_ids = json.loads(state.get("rule_ids_json", "[]"))
+            package_feedback = feedback.get(package["id"])
             core = self.index.units.get((package.get("core_unit_ids") or [None])[0]) or {}
             records.append({
-                "id": package["id"], "status": state.get("status", "pending"), "rule_ids": json.loads(state.get("rule_ids_json", "[]")),
+                "id": package["id"], "status": state.get("status", "pending"), "rule_ids": rule_ids,
+                "rule_count": len(rule_ids),
                 "failure_code": state.get("failure_code"), "failure_reason": state.get("failure_reason"),
                 "section_path": (package.get("attributes") or {}).get("section_path", []),
                 "snippet": str(core.get("content") or ""), "asset_count": len(package.get("asset_part_ids") or []),
-                "constraint_count": len(package.get("constraint_ids") or []), "feedback": feedback.get(package["id"]),
+                "constraint_count": len(package.get("constraint_ids") or []), "feedback": package_feedback,
+                "review_status": package_feedback.get("verdict") if package_feedback else "unreviewed",
             })
         records.sort(key=lambda item: item["id"])
         counts: dict[str, int] = {}
@@ -78,32 +98,43 @@ class RuleReviewData:
         active = sum(counts.get(status, 0) for status in (
             "generating", "reflecting", "applying_reflection", "parsing", "writing_graph",
         ))
-        elapsed_seconds = self._elapsed_seconds(run_id)
+        elapsed_seconds = self._elapsed_seconds(run)
         throughput = terminal / elapsed_seconds * 60 if elapsed_seconds and terminal else 0.0
         remaining_seconds = (len(records) - terminal) / (terminal / elapsed_seconds) if elapsed_seconds and terminal else None
+        total_rules = sum(record["rule_count"] for record in records)
+        feedback_counts = {
+            "appropriate": sum(record["review_status"] == "appropriate" for record in records),
+            "inappropriate": sum(record["review_status"] == "inappropriate" for record in records),
+            "unreviewed": sum(record["review_status"] == "unreviewed" for record in records),
+        }
         return {
-            "run_id": run_id, "counts": counts, "package_count": len(records), "packages": records,
+            "run_id": run_id, "run": run, "counts": counts, "package_count": len(records), "packages": records,
+            "result_stats": {
+                "total_rules": total_rules,
+                "average_rules": total_rules / len(records) if records else 0.0,
+                "over_20": sum(record["rule_count"] > 20 for record in records),
+                "over_40": sum(record["rule_count"] > 40 for record in records),
+                "max_rules": max((record["rule_count"] for record in records), default=0),
+            },
+            "feedback_counts": feedback_counts,
             "progress": {
                 "completed": terminal, "active": active, "queued": max(0, len(records) - terminal - active),
                 "elapsed_seconds": elapsed_seconds, "throughput_per_minute": throughput,
-                "estimated_remaining_seconds": remaining_seconds,
+                "estimated_remaining_seconds": 0.0 if run and run.get("status") == "completed" else remaining_seconds,
             },
         }
 
-    def _elapsed_seconds(self, run_id: str | None) -> float | None:
-        if not run_id:
-            return None
-        path = self.extraction_dir / "rule_extraction_state.sqlite3"
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        try:
-            row = connection.execute("SELECT started_at FROM runs WHERE run_id=?", (run_id,)).fetchone()
-        finally:
-            connection.close()
-        if not row or not row[0]:
+    def _elapsed_seconds(self, run: dict[str, Any] | None) -> float | None:
+        if not run or not run.get("started_at"):
             return None
         try:
-            started = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+            started = datetime.strptime(run["started_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            finished_at = run.get("completed_at")
+            finished = (
+                datetime.strptime(finished_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                if finished_at else datetime.now(timezone.utc)
+            )
+            return max(0.0, (finished - started).total_seconds())
         except (TypeError, ValueError):
             return None
 

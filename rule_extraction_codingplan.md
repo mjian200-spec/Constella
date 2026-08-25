@@ -392,7 +392,11 @@ max_retries
 新增版本化 Prompt：
 
 ```text
-prompts/rule_extraction/rule_generator_v1.yaml
+prompts/rule_extraction/rule_generator_routed_base_v1.yaml
+prompts/rule_extraction/rule_generator_text_v1.yaml
+prompts/rule_extraction/rule_generator_image_v1.yaml
+prompts/rule_extraction/rule_generator_table_v1.yaml
+prompts/rule_extraction/rule_generator_formula_v1.yaml
 prompts/rule_extraction/rule_reflector_v1.yaml
 ```
 
@@ -928,7 +932,11 @@ Constella/
 │   ├── models.yaml
 │   └── neo4j.yaml
 ├── prompts/rule_extraction/
-│   ├── rule_generator_v1.yaml
+│   ├── rule_generator_routed_base_v1.yaml
+│   ├── rule_generator_text_v1.yaml
+│   ├── rule_generator_image_v1.yaml
+│   ├── rule_generator_table_v1.yaml
+│   ├── rule_generator_formula_v1.yaml
 │   └── rule_reflector_v1.yaml
 ├── scripts/
 │   ├── extract_rules.py

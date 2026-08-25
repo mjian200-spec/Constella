@@ -5,7 +5,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from .models import PackageProcessingResult
 
@@ -56,7 +56,7 @@ class StateStore:
         """)
         self.connection.commit()
 
-    def create_run(self, input_fingerprint: str, model: str, prompt_versions: dict[str, str]) -> str:
+    def create_run(self, input_fingerprint: str, model: str, prompt_versions: dict[str, Any]) -> str:
         run_id = f"run_{uuid.uuid4().hex[:16]}"
         self.connection.execute(
             "INSERT INTO runs(run_id,input_fingerprint,status,model,prompt_versions) VALUES(?,?,?, ?,?)",
@@ -79,6 +79,22 @@ class StateStore:
         return self.connection.execute(
             "SELECT * FROM package_states WHERE run_id=? AND context_package_id=?", (run_id, package_id)
         ).fetchone()
+
+    def queue_packages(self, run_id: str, package_ids: list[str], input_fingerprint: str) -> None:
+        """Mark only the packages selected for this invocation as pending.
+
+        This makes resumed-run progress truthful: an old failed state is not
+        counted as completed while it is still waiting for a retry worker.
+        """
+        self.connection.executemany("""
+          INSERT INTO package_states(run_id,context_package_id,input_fingerprint,status)
+          VALUES(?,?,?,'queued')
+          ON CONFLICT(run_id,context_package_id) DO UPDATE SET
+            input_fingerprint=excluded.input_fingerprint,status='queued',
+            failure_stage=NULL,failure_code=NULL,failure_reason=NULL,completed_at=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        """, ((run_id, package_id, input_fingerprint) for package_id in package_ids))
+        self.connection.commit()
 
     def set_processing(self, run_id: str, package_id: str, input_fingerprint: str, status: str) -> None:
         self.connection.execute("""

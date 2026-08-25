@@ -22,7 +22,7 @@ R: 焊接回路|燃弧 —[U=[R+B]I]→ 电压平衡关系|成立"""
 
     def test_few_shot_examples_are_injected_into_the_actual_model_system_prompt(self) -> None:
         prompt = load_prompt(Path(__file__).parents[2] / "prompts" / "rule_extraction" / "rule_reflector_full_v1.yaml")
-        self.assertEqual(2, prompt["version"])
+        self.assertEqual(5, prompt["version"])
         self.assertIn("少样本格式", prompt["system"])
         self.assertIn("完整语义稀疏补丁审核器", prompt["system"])
         self.assertIn("真实上下文包 context_000255", prompt["system"])
@@ -31,20 +31,25 @@ R: 焊接回路|燃弧 —[U=[R+B]I]→ 电压平衡关系|成立"""
 
     def test_all_prompt_stages_include_semantic_failure_controls_and_real_examples(self) -> None:
         prompt_dir = Path(__file__).parents[2] / "prompts" / "rule_extraction"
-        generator = load_prompt(prompt_dir / "rule_generator_v1.yaml")
+        base = load_prompt(prompt_dir / "rule_generator_routed_base_v1.yaml")
+        text = load_prompt(prompt_dir / "rule_generator_text_v1.yaml")
+        image = load_prompt(prompt_dir / "rule_generator_image_v1.yaml")
+        formula = load_prompt(prompt_dir / "rule_generator_formula_v1.yaml")
         reflector = load_prompt(prompt_dir / "rule_reflector_full_v1.yaml")
 
-        self.assertEqual(11, generator["version"])
-        self.assertEqual(2, reflector["version"])
-        self.assertIn("原始图片用于核对字形", generator["system"])
-        self.assertIn("绝不猜测缺失词", generator["system"])
-        self.assertIn("母材材质|低碳钢", generator["system"])
-        self.assertIn("约束候选→作用域判定→C/R归位", generator["system"])
-        self.assertIn("包约束即使标为certain", generator["system"])
-        self.assertIn("只有“对象和状态都相同”", generator["system"])
-        self.assertIn("约束分析：标题和临近正文共同限定", generator["system"])
-        self.assertIn("没有约束时也必须写“C: 无”", generator["system"])
-        self.assertIn("复杂截面药芯焊丝|挺度 —[优于]→ O形药芯焊丝|挺度", generator["system"])
+        self.assertEqual(4, base["version"])
+        self.assertEqual(5, reflector["version"])
+        self.assertIn("原图用于核对OCR易混字符", image["system"])
+        self.assertIn("不得猜测", base["system"])
+        self.assertIn("母材材质|低碳钢", base["system"])
+        self.assertIn("约束归位", base["system"])
+        self.assertIn("包约束及来源范围", base["system"])
+        self.assertIn("对象和状态完全重复", base["system"])
+        self.assertIn("标题和临近正文共同限定", load_prompt(
+            prompt_dir / "rule_generator_table_v1.yaml"
+        )["system"])
+        self.assertIn("没有共同约束时写“C: 无”", base["system"])
+        self.assertIn("复杂截面药芯焊丝|挺度 —[优于]→ O形药芯焊丝|挺度", text["system"])
         self.assertIn("NO_CHANGES不是预设结论", reflector["system"])
         self.assertIn("只改措辞、同义词、语序、标点", reflector["system"])
         self.assertIn("完整语义稀疏补丁审核器", reflector["system"])
@@ -53,9 +58,9 @@ R: 焊接回路|燃弧 —[U=[R+B]I]→ 电压平衡关系|成立"""
         self.assertIn("真实上下文包 context_000540", reflector["system"])
         self.assertIn("真实上下文包 context_000255", reflector["system"])
         self.assertIn("完整公式放在箭头中", reflector["system"])
-        self.assertIn("对象|适用状态 —[完整公式]→ 目标量或关系|含义", generator["system"])
-        self.assertIn("式号|完整原公式 —[等价于/可化简为/变换为]→ 式号|完整结果公式", generator["system"])
-        self.assertIn("焊接回路|燃弧 —[L \\times \\frac{\\mathrm{d}i}{\\mathrm{d}t}=E-U_a]→ 电压平衡关系|成立", generator["system"])
+        self.assertIn("对象|适用状态 —[完整公式]→ 目标量或关系|含义", formula["system"])
+        self.assertIn("式号|完整原公式 —[可化简为/等价于/变换为]→ 式号|完整结果公式", formula["system"])
+        self.assertIn("CO2气体|受电弧高温作用 —[CO2⇌CO+1/2O2-Q]→ 分解反应|发生", formula["system"])
         self.assertIn("式(5-30)|Uo/Ug=", reflector["system"])
         self.assertNotIn("式(5-30)|原公式 —[可简化为]→ 式(5-31)|简化公式", reflector["system"])
 
@@ -83,11 +88,14 @@ R: 焊接回路|燃弧 —[U=[R+B]I]→ 电压平衡关系|成立"""
 
     def test_examples_cover_constraint_sources_and_diverse_rule_types(self) -> None:
         prompt_dir = Path(__file__).parents[2] / "prompts" / "rule_extraction"
-        generator = load_prompt(prompt_dir / "rule_generator_v1.yaml")
+        generators = [
+            load_prompt(prompt_dir / f"rule_generator_{name}_v1.yaml")
+            for name in ("text", "image", "table", "formula")
+        ]
         reflector = load_prompt(prompt_dir / "rule_reflector_full_v1.yaml")
 
-        generator_system = generator["system"]
-        for source in ("标题路径：", "临近正文：", "包约束候选：", "核心正文：", "表6-43列头："):
+        generator_system = "\n".join(prompt["system"] for prompt in generators)
+        for source in ("标题路径：", "临近正文：", "包约束候选：", "核心正文：", "表题/列头："):
             self.assertIn(source, generator_system)
         self.assertIn("C: 环境温度|室温", generator_system)
         self.assertNotIn("C: 温度|30℃以上", generator_system)
@@ -97,19 +105,23 @@ R: 焊接回路|燃弧 —[U=[R+B]I]→ 电压平衡关系|成立"""
         self.assertNotIn("C: 母材材质|不锈钢 + 焊接层次|多层焊", generator_system)
 
         relations = set()
-        for index, example in enumerate(generator["examples"], start=1):
-            ruleset = parse_final_expression(
-                example["output"], f"generator_diversity_{index}",
-                prompt_id=generator["id"], prompt_version=str(generator["version"]), model="few-shot-reference",
-            )
-            relations.update(rule.relation for rule in ruleset.rules)
-        self.assertTrue({"禁止", "解决措施", "应选择", "应采用", "增加", "减少", "可化简为"}.issubset(relations))
+        for generator in generators:
+            for index, example in enumerate(generator["examples"], start=1):
+                ruleset = parse_final_expression(
+                    example["output"], f"generator_diversity_{generator['id']}_{index}",
+                    prompt_id=generator["id"], prompt_version=str(generator["version"]), model="few-shot-reference",
+                )
+                relations.update(rule.relation for rule in ruleset.rules)
+        self.assertTrue({"禁止", "解决措施", "优于", "对应", "可化简为"}.issubset(relations))
 
-        self.assertFalse(any(example["output"].strip() == "无规则" for example in generator["examples"]))
+        self.assertFalse(any(
+            example["output"].strip() == "无规则"
+            for generator in generators for example in generator["examples"]
+        ))
         self.assertTrue(any(example["output"].strip().startswith("REPLACE_R") for example in reflector["examples"]))
         all_reference_outputs = "\n".join(
             example["output"]
-            for prompt in (generator, reflector)
+            for prompt in (*generators, reflector)
             for example in prompt["examples"]
         )
         for reversed_attribute in ("|母材材质", "|保护气体成分", "气孔|缺陷种类", "裂纹|缺陷种类"):

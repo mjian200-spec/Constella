@@ -9,6 +9,8 @@ from constella.rule_extraction.review_server import RuleReviewData
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTEXT_OUTPUT = ROOT / "outputs" / "context_builder"
+FULL_CONTEXT_OUTPUT = ROOT / "outputs" / "context_builder_full_fresh"
+FULL_EXTRACTION_OUTPUT = ROOT / "outputs" / "rule_extraction_full_v11_full_v2_20260825_run2"
 
 
 @unittest.skipUnless((CONTEXT_OUTPUT / "document_graph.json").is_file(), "requires real Context Builder output")
@@ -26,3 +28,27 @@ class RealReviewDataTests(unittest.TestCase):
             })
             self.assertEqual("inappropriate", saved["verdict"])
             self.assertEqual(saved, data.feedback()["context_000472"])
+
+
+@unittest.skipUnless(
+    (FULL_CONTEXT_OUTPUT / "document_graph.json").is_file()
+    and (FULL_EXTRACTION_OUTPUT / "rule_extraction_state.sqlite3").is_file(),
+    "requires the current full extraction output",
+)
+class FullResultReviewDataTests(unittest.TestCase):
+    def test_summary_exposes_completed_result_and_review_dimensions(self) -> None:
+        summary = RuleReviewData(FULL_CONTEXT_OUTPUT, FULL_EXTRACTION_OUTPUT).summary()
+
+        self.assertEqual("completed", summary["run"]["status"])
+        self.assertEqual(911, summary["package_count"])
+        self.assertEqual(7188, summary["result_stats"]["total_rules"])
+        self.assertEqual(47, summary["result_stats"]["over_20"])
+        self.assertEqual(101, summary["result_stats"]["max_rules"])
+        self.assertEqual(911, sum(summary["feedback_counts"].values()))
+        self.assertEqual(0.0, summary["progress"]["estimated_remaining_seconds"])
+        self.assertEqual(1773.0, summary["progress"]["elapsed_seconds"])
+
+        largest = max(summary["packages"], key=lambda item: item["rule_count"])
+        self.assertEqual("context_000168", largest["id"])
+        self.assertEqual(101, largest["rule_count"])
+        self.assertIn(largest["review_status"], {"unreviewed", "appropriate", "inappropriate"})

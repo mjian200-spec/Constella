@@ -32,7 +32,7 @@ def main() -> int:
     inappropriate = [package_id for package_id in package_ids if feedback.get(package_id, {}).get("verdict") == "inappropriate"]
     appropriate = [package_id for package_id in package_ids if feedback.get(package_id, {}).get("verdict") == "appropriate"]
     lines = [
-        "# Qwen3.5-27B 规则抽取人工验收报告",
+        "# 规则抽取人工验收报告",
         "",
         f"- 验收总数：{len(package_ids)}",
         f"- 合适：{len(appropriate)}",

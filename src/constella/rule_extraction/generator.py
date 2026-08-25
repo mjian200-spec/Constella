@@ -9,8 +9,7 @@ import yaml
 from constella.context_builder.llm_client import LLMClient
 
 from .message_builder import MultimodalMessageBuilder
-from .models import ResolvedContextPackage
-from .reflection_patch import addressed_draft
+from .reflection_patch import ReflectionPatchError, addressed_draft, apply_reflection_patch
 
 
 class ModelOutputError(ValueError):
@@ -45,12 +44,12 @@ def response_content(response: dict[str, Any]) -> str:
 
 
 class RuleGenerator:
-    def __init__(self, models: dict[str, Any], model_key: str, generator_prompt: dict[str, Any], reflector_prompt: dict[str, Any], event_sink=None, call_sink=None, output_sink=None) -> None:
+    def __init__(self, models: dict[str, Any], model_key: str, reflector_prompt: dict[str, Any], repair_prompt: dict[str, Any] | None = None, event_sink=None, call_sink=None, output_sink=None) -> None:
         self.client = LLMClient(models, event_sink=event_sink)
         self.models = models
         self.model_key = model_key
-        self.generator_prompt = generator_prompt
         self.reflector_prompt = reflector_prompt
+        self.repair_prompt = repair_prompt or reflector_prompt
         self.builder = MultimodalMessageBuilder()
         self.call_sink = call_sink or (lambda **_: None)
         self.output_sink = output_sink or (lambda **_: None)
@@ -59,32 +58,58 @@ class RuleGenerator:
     def model_name(self) -> str:
         return str(self.models[self.model_key]["model"])
 
-    def generate(self, package: ResolvedContextPackage) -> tuple[str, str]:
-        context = self.builder.context_content(package)
-        draft = self.generate_draft_from_context(context, package.id)
-        final = self.reflect_from_context(context, package.id, draft)
-        return draft, final
-
-    def generate_draft_from_context(self, context: list[dict[str, Any]], package_id: str) -> str:
-        draft = self._call(self.generator_prompt, context, package_id, phase="generate")
+    def generate_draft_from_context(
+        self, context: list[dict[str, Any]], package_id: str, *, prompt: dict[str, Any],
+    ) -> str:
+        draft = self._call(prompt, context, package_id, phase="generate")
         self.output_sink(
             package_id=package_id, phase="generate", output=draft,
-            prompt_id=self.generator_prompt["id"], prompt_version=str(self.generator_prompt["version"]),
+            prompt_id=prompt["id"], prompt_version=str(prompt["version"]),
         )
         return draft
 
     def reflect_from_context(self, context: list[dict[str, Any]], package_id: str, draft: str) -> str:
-        reflection_blocks = list(context) + [{"type": "text", "text": (
+        reflection_blocks = self._reflection_blocks(context, draft)
+        patch = self._call(self.reflector_prompt, reflection_blocks, package_id, phase="reflect")
+        return self.ensure_valid_reflection(context, package_id, draft, patch)
+
+    @staticmethod
+    def _reflection_blocks(context: list[dict[str, Any]], draft: str) -> list[dict[str, Any]]:
+        return list(context) + [{"type": "text", "text": (
             "以下是第一次抽取的 DSL 初稿。你是这份初稿的编辑器，不得重新独立生成另一份规则。"
             "正确内容不输出，只对错误或遗漏位置输出系统规定的稀疏补丁。\n"
             "原始生成初稿（每条R前的[G/R]只用于补丁定位，不属于DSL）：\n" + addressed_draft(draft)
         )}]
-        final = self._call(self.reflector_prompt, reflection_blocks, package_id, phase="reflect")
+
+    def ensure_valid_reflection(
+        self, context: list[dict[str, Any]], package_id: str, draft: str, patch: str,
+    ) -> str:
+        """Require the reflector—not the parser—to repair a malformed patch."""
+        reflection_blocks = self._reflection_blocks(context, draft)
+        for repair_attempt in range(3):
+            try:
+                apply_reflection_patch(draft, patch)
+                break
+            except ReflectionPatchError as error:
+                if repair_attempt >= 2:
+                    raise
+                rejected_excerpt = patch if len(patch) <= 6000 else patch[:1000] + "\n...[中间省略]...\n" + patch[-5000:]
+                correction = {
+                    "type": "text",
+                    "text": (
+                        "你刚才的补丁无法执行。不要解释原因，只重新输出一份完整、最小、可执行的补丁。\n"
+                        f"执行器错误：{error}\n"
+                        "被拒绝的补丁：\n" + rejected_excerpt
+                    ),
+                }
+                patch = self._call(
+                    self.repair_prompt, reflection_blocks + [correction], package_id, phase="reflect_repair",
+                )
         self.output_sink(
-            package_id=package_id, phase="reflect", output=final,
+            package_id=package_id, phase="reflect", output=patch,
             prompt_id=self.reflector_prompt["id"], prompt_version=str(self.reflector_prompt["version"]),
         )
-        return final
+        return patch
 
     def _call(self, prompt: dict[str, Any], content: list[dict[str, Any]], package_id: str, *, phase: str) -> str:
         messages = [{"role": "system", "content": prompt["system"]}, {"role": "user", "content": content}]
@@ -94,7 +119,8 @@ class RuleGenerator:
             try:
                 response = self.client.complete(
                     self.model_key, messages, prompt_id=prompt["id"], prompt_version=prompt["version"],
-                    input_unit_ids=[package_id], max_tokens=self.models[self.model_key].get("max_tokens"),
+                    input_unit_ids=[package_id],
+                    max_tokens=prompt.get("max_tokens", self.models[self.model_key].get("max_tokens")),
                 )
                 output = response_content(response)
                 self.call_sink(phase=phase, package_id=package_id, model=self.model_name, prompt_id=prompt["id"],

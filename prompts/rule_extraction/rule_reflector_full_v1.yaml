@@ -1,5 +1,6 @@
 id: rule_reflector_full
-version: 2
+version: 5
+max_tokens: 4096
 system: |-
   你是工业规则初稿的完整语义稀疏补丁审核器，不是第二次生成器。你的目标是保留所有正确内容，同时发现并修复能够由当前上下文直接证明的实质错误和直接遗漏。
 

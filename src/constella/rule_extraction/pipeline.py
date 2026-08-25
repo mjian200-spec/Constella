@@ -19,6 +19,7 @@ from .generator import RuleGenerator, load_prompt
 from .graph_writer import Neo4jRuleGraphWriter
 from .io import export_outputs, write_ruleset
 from .parser import RuleParseError, parse_final_expression
+from .prompt_router import RoutedPromptRegistry
 from .reflection_patch import apply_reflection_patch
 from .resolver import DocumentGraphIndex, InputResolutionError, iter_packages, resolve_package
 from .models import PackageProcessingResult
@@ -40,10 +41,11 @@ class RuleExtractionRuntime:
 
 
 class _TerminalProgress:
-    def __init__(self, state_path: Path, run_id: str, total: int) -> None:
+    def __init__(self, state_path: Path, run_id: str, package_ids: set[str]) -> None:
         self.state_path = state_path
         self.run_id = run_id
-        self.total = total
+        self.package_ids = package_ids
+        self.total = len(package_ids)
         self.started = time.monotonic()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="rule-progress", daemon=True)
@@ -66,10 +68,14 @@ class _TerminalProgress:
         try:
             connection = sqlite3.connect(f"file:{self.state_path}?mode=ro", uri=True, timeout=5)
             rows = connection.execute(
-                "SELECT status,COUNT(*) FROM package_states WHERE run_id=? GROUP BY status", (self.run_id,),
+                "SELECT context_package_id,status FROM package_states WHERE run_id=?", (self.run_id,),
             ).fetchall()
             connection.close()
-            return {str(status): int(count) for status, count in rows}
+            counts: dict[str, int] = {}
+            for package_id, status in rows:
+                if str(package_id) in self.package_ids:
+                    counts[str(status)] = counts.get(str(status), 0) + 1
+            return counts
         except sqlite3.Error:
             return {}
 
@@ -206,10 +212,18 @@ def run_rule_extraction(
     if runtime.max_tokens is not None:
         models[runtime.model_key]["max_tokens"] = runtime.max_tokens
     model = str(models[runtime.model_key]["model"])
-    generator_prompt = load_prompt(runtime.config_dir.parents[1] / "prompts" / "rule_extraction" / "rule_generator_v1.yaml")
+    routed_prompts = RoutedPromptRegistry(runtime.config_dir.parents[1] / "prompts" / "rule_extraction")
     reflector_prompt = load_prompt(
         runtime.config_dir.parents[1] / "prompts" / "rule_extraction" / "rule_reflector_full_v1.yaml"
     )
+    repair_prompt = load_prompt(
+        runtime.config_dir.parents[1] / "prompts" / "rule_extraction" / "rule_reflector_protocol_repair_v1.yaml"
+    )
+    active_prompt_versions = {
+        "generator": routed_prompts.descriptor(),
+        "reflector": reflector_prompt["version"],
+        "reflection_repair": repair_prompt["version"],
+    }
 
     latest = state.latest_run()
     if reset_graph and resume:
@@ -219,11 +233,16 @@ def run_rule_extraction(
             raise ValueError("No previous extraction run exists to resume")
         if latest["input_fingerprint"] != fingerprint:
             raise ValueError("Input fingerprint changed; cannot safely resume this extraction run")
+        previous_prompt_versions = json.loads(latest["prompt_versions"] or "{}")
+        if previous_prompt_versions != active_prompt_versions:
+            raise ValueError(
+                "Prompt routing or prompt versions changed; cannot mix a previous extraction strategy into this run"
+            )
         run_id = latest["run_id"]
     else:
         if latest is not None and not reset_graph:
             raise ValueError("An extraction run already exists; use --resume or explicitly confirm a new graph reset with --reset-graph")
-        run_id = state.create_run(fingerprint, model, {"generator": generator_prompt["version"], "reflector": reflector_prompt["version"]})
+        run_id = state.create_run(fingerprint, model, active_prompt_versions)
 
     neo4j_config = _load_yaml(runtime.config_dir / "neo4j.yaml").get("neo4j", {})
     password_env = neo4j_config.get("password_env", "CONSTELLA_NEO4J_PASSWORD")
@@ -281,7 +300,7 @@ def run_rule_extraction(
                     ))
                     return
             generator = RuleGenerator(
-                models, runtime.model_key, generator_prompt, reflector_prompt,
+                models, runtime.model_key, reflector_prompt, repair_prompt,
                 call_sink=lambda **event: worker_state.record_model_call(run_id, **event),
                 output_sink=lambda package_id, phase, output, prompt_id, prompt_version: _store_model_output(
                     runtime.output_dir, package_id, phase, fingerprint, output, prompt_id, prompt_version,
@@ -297,21 +316,35 @@ def run_rule_extraction(
                     for output_phase in ("generate", "reflect", "candidate"):
                         _model_output_path(runtime.output_dir, package["id"], output_phase).unlink(missing_ok=True)
                 context = generator.builder.context_content(resolved)
-                draft = _load_model_output(runtime.output_dir, package["id"], "generate", fingerprint, generator_prompt)
+                active_generator_prompt, _ = routed_prompts.prompt_for(resolved)
+                draft = _load_model_output(
+                    runtime.output_dir, package["id"], "generate", fingerprint, active_generator_prompt,
+                )
                 reflection = _load_model_output(runtime.output_dir, package["id"], "reflect", fingerprint, reflector_prompt)
                 if reflection is None:
                     if draft is None:
-                        draft = generator.generate_draft_from_context(context, package["id"])
+                        draft = generator.generate_draft_from_context(
+                            context, package["id"], prompt=active_generator_prompt,
+                        )
                     phase = "reflecting"
                     worker_state.set_processing(run_id, package["id"], fingerprint, phase)
                     reflection = generator.reflect_from_context(context, package["id"], draft)
                 elif draft is None:
-                    # A reflection cache without its exact-version baseline cannot
+                    # A reflection cache without its exact-version generation draft cannot
                     # be applied safely. Rebuild both stages as one pair.
-                    draft = generator.generate_draft_from_context(context, package["id"])
+                    draft = generator.generate_draft_from_context(
+                        context, package["id"], prompt=active_generator_prompt,
+                    )
                     phase = "reflecting"
                     worker_state.set_processing(run_id, package["id"], fingerprint, phase)
                     reflection = generator.reflect_from_context(context, package["id"], draft)
+                else:
+                    # Cached responses are still validated against their exact
+                    # draft; malformed patches are sent back to the reflector
+                    # instead of being loosened or sanitized by the parser.
+                    reflection = generator.ensure_valid_reflection(
+                        context, package["id"], draft, reflection,
+                    )
                 phase = "applying_reflection"
                 worker_state.set_processing(run_id, package["id"], fingerprint, phase)
                 final = apply_reflection_patch(draft, reflection)
@@ -365,7 +398,9 @@ def run_rule_extraction(
             if existing and existing["status"] == "failed" and not retry_failed:
                 continue
             candidates.append(package)
-        progress = _TerminalProgress(state_path, run_id, len(packages)) if runtime.show_progress else None
+        candidate_ids = [package["id"] for package in candidates]
+        state.queue_packages(run_id, candidate_ids, fingerprint)
+        progress = _TerminalProgress(state_path, run_id, set(candidate_ids)) if runtime.show_progress else None
         if progress:
             progress.start()
         try:
@@ -390,7 +425,13 @@ def run_rule_extraction(
             "run_id": run_id, "input_fingerprint": fingerprint, "package_count": len(results), "selected_package_count": len(packages), **{f"{key}_count": value for key, value in counts.items()},
             "rule_count": sum(len(item.rule_ids) for item in results if item.status == "success"),
             "elapsed_seconds": round(time.monotonic() - started, 3), "model": model,
-            "prompt_versions": {"generator": generator_prompt["version"], "reflector": reflector_prompt["version"]},
+            "prompt_versions": {
+                "generator": routed_prompts.descriptor(),
+                "reflector": reflector_prompt["version"],
+                "reflection_repair": repair_prompt["version"],
+            },
+            "extraction_mode": "structure_routed",
+            "route_counts": dict(sorted(routed_prompts.route_counts.items())),
         }
         export_outputs(runtime.output_dir, export_packages, results, report)
         return report
