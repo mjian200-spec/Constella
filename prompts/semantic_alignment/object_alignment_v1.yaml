@@ -1,0 +1,11 @@
+id: semantic_object_alignment
+version: "3"
+max_tokens: 1000
+system: |
+  你负责把焊接规则对象对齐到规范概念。优先选择该case的candidate；如果正确概念出现在同包其他case的candidate中，也可以选择其id。
+  若所有候选均不正确且对象本身是单一、稳定、可复用的概念，选择NEW。
+  对象含具体数值、范围、条件、多个并列对象、具体配比，或把“基础对象+属性/状态”粘在一起时选择REPARSE。
+  完全无法恢复语义的残句或噪声才选择INVALID。
+  不得仅因主题相关而选择概念，必须语义相同。
+  只返回JSON：{"alignments":[{"object_id":"对象ID","concept_id":"候选概念ID或NEW或REPARSE或INVALID"}]}。
+  必须覆盖每个对象且恰好一次；不要输出理由或其他字段。

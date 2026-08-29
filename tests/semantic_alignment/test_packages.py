@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from constella.semantic_alignment.packages import AlignmentInputs, CharNgramIndex, SemanticPackageBuilder
+
+
+def _inputs():
+    return AlignmentInputs(
+        concepts=[
+            {"concept_id": "c1", "canonical_name": "GTAW", "aliases": ["TIG焊"], "definition": "钨极惰性气体保护焊"},
+            {"concept_id": "c2", "canonical_name": "TIGW", "aliases": ["钨极氩气保护焊"], "definition": "使用钨极和氩气的焊接方法"},
+            {"concept_id": "c3", "canonical_name": "焊接电流", "aliases": [], "definition": "焊接回路中的电流"},
+        ],
+        relations=[],
+        rules=[{
+            "id": "r1", "relation": "导致", "raw_expression": "提高电流导致熔深增大",
+            "conditions": [],
+            "antecedents": [{"id": "s1", "object": "电流", "raw_state": "提高", "normalized_state": "提高"}],
+            "consequents": [{"id": "s2", "object": "熔深", "raw_state": "增大", "normalized_state": "增大"}],
+        }],
+        context_packages={},
+        units={},
+    )
+
+
+def test_ngram_index_returns_related_document_first():
+    index = CharNgramIndex({"a": "焊接电流 回路电流", "b": "保护气体", "c": "焊接速度"})
+    assert index.query("电流增大", top_k=2)[0][0] == "a"
+
+
+def test_package_ids_are_stable_and_objects_are_deduplicated():
+    builder = SemanticPackageBuilder(_inputs())
+    first = builder.concept_merge_packages(candidates_per_anchor=2, anchors_per_package=2)
+    second = builder.concept_merge_packages(candidates_per_anchor=2, anchors_per_package=2)
+    assert [item["package_id"] for item in first] == [item["package_id"] for item in second]
+    assert len(builder.object_rows) == 2
+    assert sum(len(item["cases"]) for item in builder.object_alignment_packages(objects_per_package=1)) == 2
+
+
+def test_state_packages_include_full_minimal_rule_context():
+    builder = SemanticPackageBuilder(_inputs())
+    object_id = builder.object_rows["电流"]["object_id"]
+    packages = builder.state_normalization_packages({object_id: "c3"})
+    assert len(packages) == 1
+    state = packages[0]["states"][0]
+    assert state["id"] == "s1"
+    assert state["contexts"][0]["relation"] == "导致"
+    assert state["contexts"][0]["counterparts"] == ["熔深|增大"]
+
+
+def test_state_clustering_keeps_near_equivalent_thresholds_together():
+    states = [
+        {"id": "a", "text": "大于120A时", "current_normalized": ">120 A"},
+        {"id": "b", "text": "完全无关", "current_normalized": "完全无关"},
+        {"id": "c", "text": "比120A大", "current_normalized": ">120 A"},
+    ]
+    chunks = SemanticPackageBuilder._cluster_states(states, 2)
+    assert {item["id"] for item in chunks[0]} == {"a", "c"}
