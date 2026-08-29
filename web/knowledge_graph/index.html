@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Constella · 焊接知识图谱</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><strong>Constella</strong><span>焊接知识图谱</span></div>
+    <div class="dataset"><span class="pulse"></span><span id="dataset-id">读取数据集…</span></div>
+  </header>
+
+  <main>
+    <section id="metrics" class="metrics" aria-label="图谱概览"></section>
+
+    <section class="workspace">
+      <aside class="explorer">
+        <div class="panel-head">
+          <div><span class="eyebrow">EXPLORE</span><h1>知识检索</h1></div>
+          <button id="overview" class="icon-button" title="返回概念总览" aria-label="返回概念总览">⌂</button>
+        </div>
+        <div class="search-box">
+          <input id="query" type="search" placeholder="搜索概念、规则、对象或状态" autocomplete="off">
+          <select id="kind" aria-label="实体类型">
+            <option value="all">全部类型</option>
+            <option value="concept">概念</option>
+            <option value="rule">规则</option>
+            <option value="state">状态</option>
+            <option value="unmatched">未匹配状态</option>
+          </select>
+        </div>
+        <div class="quick-filters">
+          <button data-kind="concept">概念层</button>
+          <button data-kind="rule">规则</button>
+          <button data-kind="unmatched">未匹配</button>
+        </div>
+        <div id="result-meta" class="result-meta">输入关键词或选择类型</div>
+        <div id="results" class="results" aria-live="polite"></div>
+      </aside>
+
+      <section class="graph-panel">
+        <div class="graph-toolbar">
+          <div>
+            <span class="eyebrow">GRAPH</span>
+            <h2 id="graph-title">概念结构总览</h2>
+          </div>
+          <div class="graph-actions">
+            <button id="fit">适应画布</button>
+            <button id="zoom-out" aria-label="缩小">−</button>
+            <button id="zoom-in" aria-label="放大">＋</button>
+          </div>
+        </div>
+        <div id="graph" class="graph" role="application" aria-label="交互式知识图谱">
+          <div class="loading">正在载入图谱…</div>
+        </div>
+        <div class="legend" aria-label="图例">
+          <span><i class="concept"></i>概念</span>
+          <span><i class="rule"></i>规则</span>
+          <span><i class="state"></i>状态表达式</span>
+          <span><i class="transition"></i>状态迁移</span>
+          <span class="hint">滚轮缩放 · 拖动画布 · 点击节点查看</span>
+        </div>
+      </section>
+
+      <aside id="inspector" class="inspector">
+        <div class="empty-inspector">
+          <span class="constellation">✦</span>
+          <h2>选择一个节点</h2>
+          <p>查看概念定义、规则表达式、状态及其相邻关系。</p>
+        </div>
+      </aside>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
