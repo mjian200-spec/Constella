@@ -31,6 +31,8 @@ const statusLabel = value => ({
   parsing: "解析中", writing_graph: "写图中", appropriate: "合适",
   inappropriate: "不合适", unreviewed: "未审核", completed: "已完成", running: "运行中",
 }[value] || value || "未知");
+const modalityLabel = value => ({text: "正文", image: "图片", table: "表格", formula: "公式"}[value] || value);
+const routeLabel = route => (route?.modalities || []).map(modalityLabel).join(" + ") || "未知路由";
 
 async function api(path, options) {
   const response = await fetch(path, {cache: "no-store", ...options});
@@ -79,6 +81,24 @@ function renderProgress(summary) {
     ${completed ? "" : `<div class="meta">已运行 ${duration(progress.elapsed_seconds)} · 预计剩余 ${duration(progress.estimated_remaining_seconds)}</div>`}`;
 }
 
+function renderRouteSummary(summary) {
+  const counts = summary.route_counts || {};
+  const entries = Object.entries(counts).sort((left, right) => right[1] - left[1]);
+  const mode = summary.run?.extraction_mode === "structure_routed" ? "结构路由运行" : "历史统一运行";
+  $("#route-summary").innerHTML = `<div class="route-summary-head"><b>${esc(mode)}</b><span>按上下文包实际资源组合专项提示词</span></div>
+    <div class="route-distribution">${entries.map(([name, count]) => {
+      const labels = name.split("+").map(modalityLabel).join(" + ");
+      return `<button type="button" class="route-stat" data-route-name="${esc(name)}"><span>${esc(labels)}</span><b>${count}</b></button>`;
+    }).join("") || '<span class="meta">尚无路由数据</span>'}</div>`;
+  document.querySelectorAll("[data-route-name]").forEach(button => {
+    button.onclick = () => {
+      const modalities = button.dataset.routeName.split("+");
+      $("#route-filter").value = modalities.length > 2 ? "mixed" : (modalities[1] || "text");
+      renderList();
+    };
+  });
+}
+
 function matchesRuleRange(count, range) {
   if (!range) return true;
   if (range === "0") return count === 0;
@@ -93,11 +113,18 @@ function filteredPackages() {
   const query = $("#query").value.trim().toLowerCase();
   const runFilter = $("#filter").value;
   const reviewFilter = $("#review-filter").value;
+  const routeFilter = $("#route-filter").value;
   const ruleFilter = $("#rule-filter").value;
   const rows = state.summary.packages.filter(item => {
     const haystack = `${item.id} ${(item.section_path || []).join(" ")} ${item.snippet || ""}`.toLowerCase();
+    const modalities = item.route?.modalities || ["text"];
+    const routeMatches = !routeFilter
+      || (routeFilter === "text" && modalities.length === 1)
+      || (routeFilter === "mixed" && modalities.length > 2)
+      || (routeFilter !== "text" && routeFilter !== "mixed" && modalities.includes(routeFilter));
     return (!runFilter || item.status === runFilter)
       && (!reviewFilter || item.review_status === reviewFilter)
+      && routeMatches
       && matchesRuleRange(Number(item.rule_count || 0), ruleFilter)
       && (!query || haystack.includes(query));
   });
@@ -126,7 +153,7 @@ function renderList() {
       <span class="row-head"><b>${esc(item.id)}</b><span class="rule-count ${dense}">${item.rule_count} 条</span></span>
       <small class="path">${esc((item.section_path || []).join(" / ") || "未标注章节")}</small>
       <small>${esc(short(item.snippet))}</small>
-      <span class="row-flags"><span class="badge ${esc(item.status)}">${esc(statusLabel(item.status))}</span><span class="badge ${esc(item.review_status)}">${esc(statusLabel(item.review_status))}</span>${item.asset_count ? `<span class="meta">${item.asset_count} 资源</span>` : ""}</span>
+      <span class="row-flags"><span class="badge ${esc(item.status)}">${esc(statusLabel(item.status))}</span><span class="badge ${esc(item.review_status)}">${esc(statusLabel(item.review_status))}</span><span class="route-mini">${esc(routeLabel(item.route))}</span></span>
     </button>`;
   }).join("") : '<div class="empty">没有符合筛选条件的包。</div>';
   list.scrollTop = scrollTop;
@@ -148,6 +175,24 @@ function assetCard(asset, packageId) {
   return `<div class="asset"><div class="content-head"><b>${esc(unit.id)}</b><span class="badge">${esc(unit.type)}</span></div><p class="meta">${esc(asset.caption || "")}</p>${body}</div>`;
 }
 
+function routeOverview(detail) {
+  const route = detail.route || {};
+  const expected = route.expected || {modalities: ["text"]};
+  const actual = route.actual;
+  const status = route.status || "pending";
+  const statusHtml = status === "matched"
+    ? '<span class="badge success">实际提示词匹配</span>'
+    : status === "mismatch"
+      ? '<span class="badge failed">实际提示词与当前路由不一致</span>'
+      : status === "legacy"
+        ? '<span class="badge attention">历史统一提示词结果</span>'
+        : '<span class="badge pending">等待生成提示词记录</span>';
+  return `<section class="route-overview">
+    <div class="route-overview-main"><div><span class="eyebrow">结构抽取路由</span><div class="route-flow">${expected.modalities.map((item, index) => `${index ? '<span class="route-plus">+</span>' : ''}<span class="route-node ${esc(item)}"><i></i>${esc(modalityLabel(item))}</span>`).join("")}</div></div>${statusHtml}</div>
+    <div class="route-prompt-meta"><span>预期：${esc(routeLabel(expected))}</span><span>实际：${esc(actual ? routeLabel(actual) : "尚未生成")}</span>${actual?.prompt_id ? `<code>${esc(actual.prompt_id)}</code>` : ""}${actual?.prompt_version ? `<code>${esc(actual.prompt_version)}</code>` : ""}</div>
+  </section>`;
+}
+
 function parseStatus(detail) {
   const current = detail.state || {};
   if (current.status === "success") return `<span class="badge success">可解析并已写入图</span><b>${(current.rule_ids || []).length} 条规则</b>`;
@@ -162,11 +207,21 @@ function tabButton(id, label, count = null) {
 
 function renderContext(detail) {
   const resolved = detail.resolved;
+  const expected = detail.route?.expected?.modalities || ["text"];
+  const assetsFor = modality => resolved.assets.filter(asset => {
+    const type = String(asset.unit?.type || "").toLowerCase();
+    if (modality === "image") return type === "figure" || type === "image";
+    return type === modality;
+  });
+  const specialistSections = expected.filter(item => item !== "text").map(modality => {
+    const assets = assetsFor(modality);
+    return `<details class="panel-section route-resource ${esc(modality)}" open><summary>${esc(modalityLabel(modality))}专项输入 <span>${assets.length}</span></summary><div class="assets">${assets.map(asset => assetCard(asset, detail.package.id)).join("") || '<div class="empty compact">路由已命中，但没有可直接展示的独立资源</div>'}</div></details>`;
+  }).join("");
   return `<div class="tab-panel">
-    <section class="panel-section"><h3>核心正文</h3>${resolved.core_units.map(unitCard).join("") || '<div class="empty compact">无核心正文</div>'}</section>
-    <details class="panel-section" open><summary>支撑内容 <span>${resolved.support_units.length}</span></summary>${resolved.support_units.map(unitCard).join("") || '<div class="empty compact">无支撑内容</div>'}</details>
-    <details class="panel-section" open><summary>标题与上下文约束 <span>${resolved.constraints.length}</span></summary><div class="constraint-list">${resolved.constraints.map(item => `<span class="constraint"><b>${esc(item.type)}</b>${esc(item.value)}</span>`).join("") || '<span class="meta">无明确约束</span>'}</div></details>
-    <details class="panel-section"><summary>关联图片、表格与公式 <span>${resolved.assets.length}</span></summary><div class="assets">${resolved.assets.map(asset => assetCard(asset, detail.package.id)).join("") || '<div class="empty compact">无关联资源</div>'}</div></details>
+    <section class="panel-section route-resource text"><h3>正文专项 · 核心正文</h3>${resolved.core_units.map(unitCard).join("") || '<div class="empty compact">无核心正文</div>'}</section>
+    <details class="panel-section route-resource text" open><summary>正文专项 · 标题与支撑内容 <span>${resolved.support_units.length}</span></summary>${resolved.support_units.map(unitCard).join("") || '<div class="empty compact">无支撑内容</div>'}</details>
+    <details class="panel-section" open><summary>公共作用域候选 <span>${resolved.constraints.length}</span></summary><div class="constraint-list">${resolved.constraints.map(item => `<span class="constraint"><b>${esc(item.type)}</b>${esc(item.value)}</span>`).join("") || '<span class="meta">无明确约束</span>'}</div></details>
+    ${specialistSections}
   </div>`;
 }
 
@@ -175,12 +230,14 @@ function outputButton(id, label) {
 }
 
 function renderOutputs(detail) {
-  const outputs = detail.model_outputs || {};
+  const records = detail.model_outputs || {};
   const labels = {generate: "第一次生成", reflect: "反思修改指令", candidate: "最终 DSL"};
-  const value = outputs[state.outputTab] || "尚未产生";
+  const record = records[state.outputTab] || {};
+  const value = record.output || "尚未产生";
   return `<div class="tab-panel">
     <div class="notice">反思区展示的是对初稿的修改、删除或补充指令；最终结果以“最终 DSL”为准。</div>
     <div class="subtabs">${outputButton("generate", labels.generate)}${outputButton("reflect", labels.reflect)}${outputButton("candidate", labels.candidate)}</div>
+    <div class="output-stage-meta"><span class="badge">${esc(record.prompt_id || "尚无提示词记录")}</span>${record.prompt_version ? `<code>${esc(record.prompt_version)}</code>` : ""}</div>
     <div class="output-head"><b>${labels[state.outputTab]}</b><button class="copy-button" data-copy-output="${state.outputTab}">复制</button></div>
     <pre class="model-output">${esc(value)}</pre>
   </div>`;
@@ -269,7 +326,7 @@ function bindDetailActions() {
   };
   document.querySelectorAll("[data-copy-output]").forEach(button => {
     button.onclick = async () => {
-      await navigator.clipboard.writeText(state.detail.model_outputs[button.dataset.copyOutput] || "");
+      await navigator.clipboard.writeText(state.detail.model_outputs[button.dataset.copyOutput]?.output || "");
       button.textContent = "已复制";
     };
   });
@@ -288,7 +345,7 @@ function renderDetail() {
   if (!detail) return;
   const resolved = detail.resolved;
   const ruleCount = detail.ruleset?.rules?.length || 0;
-  const tabs = `${tabButton("rules", "结构化规则", ruleCount)}${tabButton("context", "原始上下文", resolved.core_units.length + resolved.support_units.length)}${tabButton("outputs", "模型输出", 3)}`;
+  const tabs = `${tabButton("rules", "结构化规则", ruleCount)}${tabButton("context", "路由上下文", resolved.core_units.length + resolved.support_units.length + resolved.assets.length)}${tabButton("outputs", "阶段输出", 3)}`;
   const panel = state.detailTab === "context" ? renderContext(detail) : (state.detailTab === "outputs" ? renderOutputs(detail) : renderRules(detail));
   $("#detail").innerHTML = `
     <div class="detail-header">
@@ -296,6 +353,7 @@ function renderDetail() {
       <div class="detail-actions"><button id="previous-package" title="上一个（←）">← 上一个</button><button id="next-package" title="下一个（→）">下一个 →</button><button id="refresh-detail">刷新</button></div>
     </div>
     <div class="package-status">${parseStatus(detail)}${ruleCount > 20 ? `<span class="badge attention">高密度结果 · ${ruleCount} 条</span>` : ""}</div>
+    ${routeOverview(detail)}
     <nav class="tabs">${tabs}</nav>
     ${panel}
     ${renderFeedback(detail)}`;
@@ -362,12 +420,14 @@ async function refreshSummary(showTimestamp = true) {
     state.summary = await api("/api/summary");
     renderMetrics(state.summary);
     renderProgress(state.summary);
+    renderRouteSummary(state.summary);
     renderList();
     const run = state.summary.run || {};
     const completed = run.status === "completed";
     $("#run-badge").className = `run-badge ${completed ? "completed" : "running"}`;
     $("#run-badge").textContent = statusLabel(run.status || "未开始");
-    $("#status").textContent = `${run.model ? run.model.split("/").pop() : "未指定模型"}${showTimestamp ? ` · ${new Date().toLocaleTimeString()}` : ""}`;
+    const mode = run.extraction_mode === "structure_routed" ? "结构路由" : "历史统一";
+    $("#status").textContent = `${run.model ? run.model.split("/").pop() : "未指定模型"} · ${mode}${showTimestamp ? ` · ${new Date().toLocaleTimeString()}` : ""}`;
     if (!state.autoRefreshInitialized) {
       $("#live").checked = !completed;
       state.autoRefreshInitialized = true;
@@ -382,7 +442,7 @@ async function refreshSummary(showTimestamp = true) {
   }
 }
 
-for (const selector of ["#query", "#filter", "#review-filter", "#rule-filter", "#sort"]) {
+for (const selector of ["#query", "#filter", "#review-filter", "#route-filter", "#rule-filter", "#sort"]) {
   $(selector).addEventListener(selector === "#query" ? "input" : "change", renderList);
 }
 $("#refresh").onclick = () => refreshSummary();

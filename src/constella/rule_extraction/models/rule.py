@@ -45,7 +45,6 @@ class StructuredRule:
 class StructuredRuleSet:
     context_package_id: str
     rules: list[StructuredRule]
-    improvement_notes: list[str]
     final_expression: str
     prompt_id: str
     prompt_version: str
@@ -63,7 +62,6 @@ class PackageProcessingResult:
     failure_stage: str | None = None
     failure_code: str | None = None
     failure_reason: str | None = None
-    improvement_notes: list[str] = field(default_factory=list)
     input_fingerprint: str = ""
     run_id: str = ""
 

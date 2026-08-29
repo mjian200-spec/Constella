@@ -24,6 +24,7 @@ class ResolvedConstraint:
     source_id: str
     scope: dict[str, Any]
     status: str
+    source_unit: ResolvedUnit
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

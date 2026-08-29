@@ -14,7 +14,14 @@ from pathlib import Path
 from typing import Any, Type
 from urllib.parse import unquote, urlparse
 
-from .resolver import DocumentGraphIndex, InputResolutionError, iter_packages, resolve_package
+from .prompt_router import route_modalities_for_types, route_name
+from .resolver import (
+    DocumentGraphIndex,
+    InputResolutionError,
+    is_rule_extraction_package,
+    iter_packages,
+    resolve_package,
+)
 
 
 class RuleReviewData:
@@ -23,38 +30,42 @@ class RuleReviewData:
         self.index = DocumentGraphIndex.load(context_dir / "document_graph.json")
         self.packages = {
             item["id"]: item for item in iter_packages(context_dir / "context_packages.jsonl")
-            if package_ids is None or item["id"] in package_ids
+            if is_rule_extraction_package(item) and (package_ids is None or item["id"] in package_ids)
         }
         self.feedback_path = extraction_dir / "manual_feedback.jsonl"
         self.lock = threading.Lock()
 
-    def states(self) -> tuple[str | None, dict[str, dict[str, Any]]]:
+    def _snapshot(self, package_id: str | None = None) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
         path = self.extraction_dir / "rule_extraction_state.sqlite3"
         if not path.is_file():
             return None, {}
         connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         connection.row_factory = sqlite3.Row
         try:
-            run = connection.execute("SELECT run_id FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
-            if not run:
-                return None, {}
-            rows = connection.execute("SELECT * FROM package_states WHERE run_id=?", (run["run_id"],)).fetchall()
-            return run["run_id"], {row["context_package_id"]: dict(row) for row in rows}
-        finally:
-            connection.close()
-
-    def run_info(self) -> dict[str, Any] | None:
-        path = self.extraction_dir / "rule_extraction_state.sqlite3"
-        if not path.is_file():
-            return None
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        connection.row_factory = sqlite3.Row
-        try:
-            row = connection.execute(
-                "SELECT run_id, status, started_at, completed_at, model "
+            run_row = connection.execute(
+                "SELECT run_id, status, started_at, completed_at, model, prompt_versions "
                 "FROM runs ORDER BY started_at DESC LIMIT 1"
             ).fetchone()
-            return dict(row) if row else None
+            if not run_row:
+                return None, {}
+            run = dict(run_row)
+            try:
+                run["prompt_versions"] = json.loads(run.get("prompt_versions") or "{}")
+            except (TypeError, ValueError):
+                run["prompt_versions"] = {}
+            generator = run["prompt_versions"].get("generator")
+            run["extraction_mode"] = (
+                "structure_routed" if isinstance(generator, dict) and generator.get("mode") == "routed"
+                else "legacy_uniform"
+            )
+            if package_id is None:
+                rows = connection.execute("SELECT * FROM package_states WHERE run_id=?", (run["run_id"],)).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM package_states WHERE run_id=? AND context_package_id=?",
+                    (run["run_id"], package_id),
+                ).fetchall()
+            return run, {row["context_package_id"]: dict(row) for row in rows}
         finally:
             connection.close()
 
@@ -72,23 +83,28 @@ class RuleReviewData:
         return result
 
     def summary(self) -> dict[str, Any]:
-        run_id, states = self.states()
-        run = self.run_info()
+        run, states = self._snapshot()
+        run_id = run["run_id"] if run else None
         feedback = self.feedback()
         records = []
-        for package in self.packages.values():
+        route_counts: dict[str, int] = {}
+        visible_packages = (
+            [package for package_id, package in self.packages.items() if package_id in states]
+            if run_id and states else list(self.packages.values())
+        )
+        for package in visible_packages:
             state = states.get(package["id"], {})
             rule_ids = json.loads(state.get("rule_ids_json", "[]"))
             package_feedback = feedback.get(package["id"])
             core = self.index.units.get((package.get("core_unit_ids") or [None])[0]) or {}
+            route = self._expected_route(package)
+            route_counts[route["name"]] = route_counts.get(route["name"], 0) + 1
             records.append({
-                "id": package["id"], "status": state.get("status", "pending"), "rule_ids": rule_ids,
-                "rule_count": len(rule_ids),
-                "failure_code": state.get("failure_code"), "failure_reason": state.get("failure_reason"),
+                "id": package["id"], "status": state.get("status", "pending"), "rule_count": len(rule_ids),
                 "section_path": (package.get("attributes") or {}).get("section_path", []),
-                "snippet": str(core.get("content") or ""), "asset_count": len(package.get("asset_part_ids") or []),
-                "constraint_count": len(package.get("constraint_ids") or []), "feedback": package_feedback,
+                "snippet": str(core.get("content") or ""),
                 "review_status": package_feedback.get("verdict") if package_feedback else "unreviewed",
+                "route": route,
             })
         records.sort(key=lambda item: item["id"])
         counts: dict[str, int] = {}
@@ -96,7 +112,7 @@ class RuleReviewData:
             counts[record["status"]] = counts.get(record["status"], 0) + 1
         terminal = sum(counts.get(status, 0) for status in ("success", "no_rule", "failed"))
         active = sum(counts.get(status, 0) for status in (
-            "generating", "reflecting", "applying_reflection", "parsing", "writing_graph",
+            "generating", "reflecting", "applying_reflection", "parsing", "persisting", "writing_graph",
         ))
         elapsed_seconds = self._elapsed_seconds(run)
         throughput = terminal / elapsed_seconds * 60 if elapsed_seconds and terminal else 0.0
@@ -117,6 +133,7 @@ class RuleReviewData:
                 "max_rules": max((record["rule_count"] for record in records), default=0),
             },
             "feedback_counts": feedback_counts,
+            "route_counts": dict(sorted(route_counts.items())),
             "progress": {
                 "completed": terminal, "active": active, "queued": max(0, len(records) - terminal - active),
                 "elapsed_seconds": elapsed_seconds, "throughput_per_minute": throughput,
@@ -143,18 +160,64 @@ class RuleReviewData:
         if not package:
             raise KeyError(package_id)
         resolved = resolve_package(self.index, package)
-        run_id, states = self.states()
+        run, states = self._snapshot(package_id)
+        run_id = run["run_id"] if run else None
         state = states.get(package_id, {})
-        model_outputs = {phase: self._model_output(package_id, phase) for phase in ("generate", "reflect", "candidate")}
+        model_outputs = {
+            phase: self._model_output_record(package_id, phase) for phase in ("generate", "reflect", "candidate")
+        }
+        expected_route = self._expected_route(package)
+        actual_route = self._actual_route(model_outputs.get("generate"))
+        if actual_route is None:
+            route_status = "pending"
+        elif actual_route["name"] == "legacy-uniform":
+            route_status = "legacy"
+        else:
+            route_status = "matched" if actual_route.get("modalities") == expected_route["modalities"] else "mismatch"
         # Ruleset files are an on-disk cache shared across resumptions. Never
         # expose one from an earlier attempt when the latest state is no_rule,
         # failed, or still processing.
         ruleset = self._ruleset(package_id) if state.get("status") == "success" else None
         return {
             "package": package, "resolved": asdict(resolved), "run_id": run_id,
-            "state": {**state, "rule_ids": json.loads(state.get("rule_ids_json", "[]")),
-                      "improvement_notes": json.loads(state.get("improvement_notes_json", "[]"))},
-            "model_outputs": model_outputs, "ruleset": ruleset, "feedback": self.feedback().get(package_id),
+            "state": {**state, "rule_ids": json.loads(state.get("rule_ids_json", "[]"))},
+            "route": {
+                "expected": expected_route,
+                "actual": actual_route,
+                "status": route_status,
+            },
+            "model_outputs": model_outputs,
+            "ruleset": ruleset, "feedback": self.feedback().get(package_id),
+        }
+
+    def _expected_route(self, package: dict[str, Any]) -> dict[str, Any]:
+        unit_ids = [
+            *(package.get("core_unit_ids") or []),
+            *(package.get("support_unit_ids") or []),
+            *(package.get("asset_part_ids") or []),
+        ]
+        unit_types = [
+            str((self.index.units.get(unit_id) or {}).get("type") or "")
+            for unit_id in unit_ids
+        ]
+        modalities = route_modalities_for_types(unit_types)
+        return {"name": route_name(modalities), "modalities": list(modalities)}
+
+    @staticmethod
+    def _actual_route(record: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not record:
+            return None
+        prompt_id = str(record.get("prompt_id") or "")
+        prefix = "rule_generator_routed__"
+        if prompt_id.startswith(prefix):
+            modalities = [item for item in prompt_id[len(prefix):].split("__") if item]
+            return {
+                "name": route_name(modalities), "modalities": modalities,
+                "prompt_id": prompt_id, "prompt_version": str(record.get("prompt_version") or ""),
+            }
+        return {
+            "name": "legacy-uniform", "modalities": [],
+            "prompt_id": prompt_id or None, "prompt_version": str(record.get("prompt_version") or ""),
         }
 
     def asset_path(self, package_id: str, unit_id: str) -> Path:
@@ -190,12 +253,19 @@ class RuleReviewData:
                 handle.flush()
         return record
 
-    def _model_output(self, package_id: str, phase: str) -> str | None:
+    def _model_output_record(self, package_id: str, phase: str) -> dict[str, Any] | None:
         path = self.extraction_dir / "cache" / "model_outputs" / package_id / f"{phase}.json"
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8")).get("output")
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                return None
+            return {
+                "output": value.get("output"),
+                "prompt_id": value.get("prompt_id"),
+                "prompt_version": value.get("prompt_version"),
+            }
         except (OSError, ValueError):
             return None
 

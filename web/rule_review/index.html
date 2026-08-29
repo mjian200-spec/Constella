@@ -14,6 +14,7 @@
   <main>
     <section id="metrics" class="metrics" aria-label="结果概览"></section>
     <section id="progress" class="progress" aria-label="抽取进度"></section>
+    <section id="route-summary" class="route-summary" aria-label="结构路由分布"></section>
 
     <section class="toolbar" aria-label="结果筛选">
       <input id="query" type="search" placeholder="搜索包编号、章节或核心正文">
@@ -26,6 +27,11 @@
       <select id="review-filter" aria-label="人工审核状态">
         <option value="">全部审核状态</option><option value="unreviewed">未审核</option>
         <option value="appropriate">合适</option><option value="inappropriate">不合适</option>
+      </select>
+      <select id="route-filter" aria-label="结构路由">
+        <option value="">全部结构路由</option><option value="text">仅正文</option>
+        <option value="image">含图片</option><option value="table">含表格</option>
+        <option value="formula">含公式</option><option value="mixed">多专项混合</option>
       </select>
       <select id="rule-filter" aria-label="规则数量">
         <option value="">全部规则数量</option><option value="1-10">1–10 条</option><option value="11-20">11–20 条</option>

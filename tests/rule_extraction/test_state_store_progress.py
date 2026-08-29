@@ -32,6 +32,22 @@ class StateStoreProgressTests(unittest.TestCase):
             self.assertIsNone(store.package_state(run_id, "retry_me")["failure_code"])
             store.close()
 
+    def test_resuming_reopens_the_run_without_resetting_its_start_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = StateStore(Path(directory) / "state.sqlite3")
+            run_id = store.create_run("fingerprint", "model", {})
+            started_at = store.get_run(run_id)["started_at"]
+            store.finish_run(run_id)
+
+            store.mark_run_running(run_id)
+
+            run = store.get_run(run_id)
+            self.assertEqual("running", run["status"])
+            self.assertIsNone(run["completed_at"])
+            self.assertEqual(started_at, run["started_at"])
+            self.assertGreaterEqual(store.run_elapsed_seconds(run_id), 0)
+            store.close()
+
     def test_reflector_repairs_malformed_protocol_output_before_it_is_cached(self) -> None:
         generator = object.__new__(RuleGenerator)
         generator.reflector_prompt = {"id": "reflector", "version": 3, "system": "test"}
@@ -42,11 +58,12 @@ class StateStoreProgressTests(unittest.TestCase):
         generator.output_sink = lambda **event: cached.append(event["output"])
         draft = "规则组1\nC: 无\nR: 输入|状态 —[导致]→ 输出|状态"
 
-        result = generator.ensure_valid_reflection(
+        patch, candidate = generator.ensure_valid_reflection(
             [], "context_test", draft, "审核发现：\nNO_CHANGES",
         )
 
-        self.assertEqual("NO_CHANGES", result)
+        self.assertEqual("NO_CHANGES", patch)
+        self.assertEqual(draft, candidate)
         self.assertEqual(["reflect_repair"], calls)
         self.assertEqual(["NO_CHANGES"], cached)
 

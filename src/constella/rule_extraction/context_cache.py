@@ -34,7 +34,9 @@ class ContextCache:
             return ResolvedContextPackage(
                 id=raw["id"], core_units=[ResolvedUnit(**item) for item in raw["core_units"]],
                 support_units=[ResolvedUnit(**item) for item in raw["support_units"]],
-                constraints=[ResolvedConstraint(**item) for item in raw["constraints"]],
+                constraints=[ResolvedConstraint(
+                    **{**item, "source_unit": ResolvedUnit(**item["source_unit"])}
+                ) for item in raw["constraints"]],
                 assets=[ResolvedAsset(unit=ResolvedUnit(**item["unit"]), original_path=item.get("original_path"),
                                       resolved_path=item.get("resolved_path"), caption=item.get("caption")) for item in raw["assets"]],
                 unresolved=raw.get("unresolved", []), section_path=raw.get("section_path", []),

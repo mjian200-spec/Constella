@@ -426,7 +426,7 @@ Prompt 必须要求：
 
 Prompt 示例必须来自当前真实 ContextPackage，不得编造教材段落作为示例。
 
-### 7.4 无规则与后续改进
+### 7.4 无规则
 
 解析器宽松识别模型明确表达的无规则结果，例如 `无规则`、`no_rule` 或等价的明确结论。只有模型明确判定无规则时才进入 `no_rule`。
 
@@ -439,8 +439,6 @@ Prompt 示例必须来自当前真实 ContextPackage，不得编造教材段落�
 - 存在 `R:` 片段但无法完整解析。
 
 这些情况统一为 `failed`。
-
-操作步骤、复杂流程和暂不稳定结构化内容如果被模型明确列出，保存到 `improvement_notes`；它们不进入规则图，也不影响同包中可解析规则的 `success` 状态。
 
 ---
 
@@ -562,7 +560,6 @@ StructuredRule:
 StructuredRuleSet:
     context_package_id: str
     rules: list[StructuredRule]
-    improvement_notes: list[str]
     final_expression: str
     prompt_id: str
     prompt_version: str
@@ -579,7 +576,6 @@ PackageProcessingResult:
     failure_stage: str | None
     failure_code: str | None
     failure_reason: str | None
-    improvement_notes: list[str]
     input_fingerprint: str
     run_id: str
 ```
@@ -749,8 +745,6 @@ outputs/rule_extraction/rule_extraction_state.sqlite3
 runs
 package_states
 model_calls
-graph_commits
-run_events
 ```
 
 `runs` 至少保存：
@@ -779,7 +773,6 @@ rule_ids_json
 failure_stage
 failure_code
 failure_reason
-improvement_notes_json
 started_at
 updated_at
 completed_at
@@ -870,7 +863,6 @@ rule_ids
 failure_stage
 failure_code
 failure_reason
-improvement_notes
 run_id
 ```
 
@@ -1051,7 +1043,7 @@ password_env: CONSTELLA_NEO4J_PASSWORD
 
 - 解析规则组、条件、前提、结果和关系词；
 - 兼容换行、空白和 Markdown 包裹；
-- 识别无规则与后续改进内容；
+- 识别模型明确给出的无规则结论；
 - 生成状态转换派生信息；
 - 实现简单数值规范文本；
 - 只执行最小可解析性校验。
@@ -1139,7 +1131,6 @@ fixture extraction script version
 必须出现的对象/状态
 图片是否为必要证据
 是否允许 no_rule
-是否有 improvement_notes
 ```
 
 由于第一版只做可解析性校验，自动化测试不应把模型每个自由文本词汇锁死；应同时使用：
@@ -1230,7 +1221,7 @@ fixture extraction script version
 覆盖：
 
 - 公式作为支撑资产；
-- 公式是否属于规则或只属于后续改进/无规则的判断；
+- 公式是否属于规则或不应抽取；
 - 不虚构未提供的变量含义。
 
 ### 18.8 `context_000108`：一个正文引用多幅图但包中只有一个关联图
@@ -1263,7 +1254,7 @@ fixture extraction script version
 
 - 缺陷、成因、解决措施三列；
 - 大量并列和编号内容；
-- 纯操作步骤进入 improvement notes；
+- 纯操作步骤不生成规则；
 - 规则与操作建议共存。
 
 ### 18.11 `context_000168`：当前最长真实上下文

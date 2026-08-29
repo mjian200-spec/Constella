@@ -1,0 +1,815 @@
+dataset:
+  title: 规则抽取复杂逻辑真实上下文候选集
+  schema_version: 2
+  date: 2026-08-26
+  source_context_dir: outputs/context_builder_full_20260826
+  source_extraction_dir: outputs/rule_extraction_full_routed_20260826
+  population: 911
+  record_count: 40
+  status: design_only
+  note: 本文件只记录概念逻辑，不定义DSL语法，不进入生成、反思、解析或图存储流程。
+  source_excerpt_policy: source_excerpt是从对应真实包核心原文中抽出的忠实摘要，规范化了省略内容和标点；源包仍是逐字核对依据。
+  section_roles:
+    graph_ready_examples: 按schema_version 2完整表达证据、对象状态、约束、逻辑树和规则，可用于后续入图原型。
+    records: 40个候选包的逻辑适用性标注，用于覆盖面评测；尚未全部展开为图就绪结构。
+  decision_values:
+    required_for_semantics: 不表达该逻辑会改变原文真假条件或分支含义
+    useful_for_compaction: 普通原子规则可正确表达，但逻辑组合能显著减少重复
+    needs_domain_review: 文本提示存在逻辑关系，但是否互斥或可并存仍需领域判断
+    prefer_atomic_rules: 文本可由分类、阈值或机理链清楚表达，不建议使用复杂逻辑
+
+representation_model:
+  principle: 先抽取完整对象状态命题，再分别组织约束表达式、前件表达式和后件表达式；约束不混入因果前件。
+  layers:
+    evidence:
+      description: 保存标题、核心正文、临近正文、表格、公式或图片中的原始证据位置。
+      required_fields: [source_unit_id, source_kind, source_excerpt]
+    statements:
+      description: 可独立入图和查询的完整对象状态命题；裸实体、裸数值不能成为命题。
+      required_fields: [id, object, state, normalized_state]
+    constraints:
+      description: 对规则适用范围的限制，引用statement_id，并记录来源、选择结论和作用目标。
+      required_fields: [id, statement_id, origin, decision, applies_to, evidence_refs]
+      rejected_candidate_note: rejected记录允许statement_id为null，因为它只保留上游候选ID和排除理由，不进入最终图。
+      origin_values: [title, nearby_text, core_text, table, formula, image, inherited_context]
+      decision_values:
+        applied: 作为最终规则的适用约束
+        rejected: 虽由上下文包提供，但与当前规则无关
+        needs_review: 当前证据不足以判断是否约束本规则
+    expressions:
+      description: 表达式树只引用statement或子expression，不复制或拼接实体状态。
+      node_types:
+        atom: 引用一个statement_id
+        group: 使用AND、OR或XOR连接有序子项
+      required_fields: [id, operator, operands]
+    rules:
+      description: Rule分别连接约束根、前件根、后件根；relation仍属于Rule。
+      required_fields: [id, constraint_root, antecedent_root, consequent_root, relation, evidence_refs]
+
+graph_projection:
+  node_labels:
+    StateExpression:
+      identity: [object, raw_state, normalized_state]
+      note: 继续遵守对象和状态完全相同才去重。
+    LogicExpression:
+      identity: [operator, ordered_operand_hashes]
+      properties: [operator, structural_hash]
+    Rule:
+      identity: [context_package_id, rule_group_id, rule_index, relation, expression_root_hashes]
+    ContextPackage:
+      identity: [context_package_id]
+    EvidenceUnit:
+      identity: [source_unit_id]
+  relationships:
+    - (:Rule)-[:HAS_CONSTRAINT_EXPR]->(:LogicExpression)
+    - (:Rule)-[:HAS_ANTECEDENT_EXPR]->(:LogicExpression)
+    - (:Rule)-[:HAS_CONSEQUENT_EXPR]->(:LogicExpression)
+    - (:LogicExpression)-[:OPERAND {position: int}]->(:LogicExpression)
+    - (:LogicExpression)-[:ATOM]->(:StateExpression)
+    - (:Rule)-[:DERIVED_FROM]->(:ContextPackage)
+    - (:Rule)-[:SUPPORTED_BY {source_kind: string}]->(:EvidenceUnit)
+    - (:LogicExpression)-[:SUPPORTED_BY {origin: string}]->(:EvidenceUnit)
+  atom_encoding: 为保持统一查询，每个根都是LogicExpression；单命题使用operator=ATOM并通过ATOM边指向StateExpression。
+  recursion_query_hint: 从Rule的三个表达式根分别沿OPERAND*和ATOM读取叶子，避免把逻辑表达式存成不可查询的字符串。
+  compatibility:
+    existing_condition_edges: 可从HAS_CONSTRAINT_EXPR展开后投影得到
+    existing_antecedent_edges: 可从HAS_ANTECEDENT_EXPR展开后投影得到
+    existing_consequent_edges: 可从HAS_CONSEQUENT_EXPR展开后投影得到
+    migration_note: 现有CONDITION、ANTECEDENT、CONSEQUENT边可暂时保留为扁平兼容视图，LogicExpression作为无损主结构。
+
+graph_ready_examples:
+  - context_package_id: context_000004
+    purpose: 联合因果输入与无关继承约束的分离
+    statements:
+      - {id: s1, object: 气体保护焊, state: 电流密度大, normalized_state: 电流密度大}
+      - {id: s2, object: 气体保护焊, state: 明弧, normalized_state: 明弧}
+      - {id: s3, object: 弧光辐射, state: 强烈, normalized_state: 强烈}
+      - {id: s4, object: 焊接方式, state: 半自动焊, normalized_state: 半自动焊}
+    constraints:
+      - id: c1
+        statement_id: s4
+        origin: inherited_context
+        decision: rejected
+        applies_to: r1
+        evidence_refs: [constraint_000001, unit_000166]
+        reason: 上下文包携带了半自动焊条件，但核心结论明确以气体保护焊本身为对象，不能自动把该条件挂到规则上。
+    expressions:
+      - {id: e1, operator: ATOM, operands: [s1]}
+      - {id: e2, operator: ATOM, operands: [s2]}
+      - {id: e3, operator: AND, operands: [e1, e2]}
+      - {id: e4, operator: ATOM, operands: [s3]}
+    rules:
+      - {id: r1, constraint_root: null, antecedent_root: e3, consequent_root: e4, relation: 导致, evidence_refs: [unit_000168]}
+
+  - context_package_id: context_000400
+    purpose: 将适用场景与因果前件分开
+    statements:
+      - {id: s1, object: 焊接对象, state: 薄板, normalized_state: 薄板}
+      - {id: s2, object: 工件, state: 具备装夹条件, normalized_state: 具备装夹条件}
+      - {id: s3, object: 焊接方式, state: 利用夹具, normalized_state: 利用夹具}
+    constraints:
+      - {id: c1, statement_id: s1, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_002255]}
+    expressions:
+      - {id: e1, operator: ATOM, operands: [s1]}
+      - {id: e2, operator: ATOM, operands: [s2]}
+      - {id: e3, operator: ATOM, operands: [s3]}
+    rules:
+      - {id: r1, constraint_root: e1, antecedent_root: e2, consequent_root: e3, relation: 要求, evidence_refs: [unit_002255]}
+
+  - context_package_id: context_000589
+    purpose: 将实验成立条件从趋势原因中分离
+    statements:
+      - {id: s1, object: 电弧电压, state: 适当匹配, normalized_state: 适当匹配}
+      - {id: s2, object: 焊接电流, state: 增加, normalized_state: 增加}
+      - {id: s3, object: 熔深, state: 增大, normalized_state: 增大}
+      - {id: s4, object: 熔宽, state: 增大, normalized_state: 增大}
+      - {id: s5, object: 余高, state: 增大, normalized_state: 增大}
+      - {id: s6, object: 焊丝直径, state: 1.2mm, normalized_state: 1.2 mm}
+      - {id: s7, object: 焊丝类型, state: 实心焊丝, normalized_state: 实心焊丝}
+      - {id: s8, object: 保护气体, state: 纯CO2, normalized_state: 纯CO2}
+      - {id: s9, object: 板厚, state: 9mm, normalized_state: 9 mm}
+      - {id: s10, object: 母材, state: 低碳钢板, normalized_state: 低碳钢板}
+      - {id: s11, object: 焊接速度, state: 0.4m/min且保持不变, normalized_state: 0.4 m/min且保持不变}
+      - {id: s12, object: 焊接形式, state: 平板堆焊, normalized_state: 平板堆焊}
+    constraints:
+      - {id: c1, statement_id: s1, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - {id: c2, statement_id: s6, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - {id: c3, statement_id: s7, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - {id: c4, statement_id: s8, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - {id: c5, statement_id: s9, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - {id: c6, statement_id: s10, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - {id: c7, statement_id: s11, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - {id: c8, statement_id: s12, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_003094]}
+      - id: c9
+        statement_id: null
+        origin: inherited_context
+        decision: rejected
+        applies_to: r1
+        evidence_refs: [constraint_000656, constraint_000662, constraint_000663, constraint_000668, constraint_000669]
+        reason: 这些候选来自更早文段，未直接限制本次焊接电流趋势。
+    expressions:
+      - {id: e1, operator: ATOM, operands: [s1]}
+      - {id: e2, operator: ATOM, operands: [s2]}
+      - {id: e3, operator: ATOM, operands: [s3]}
+      - {id: e4, operator: ATOM, operands: [s4]}
+      - {id: e5, operator: ATOM, operands: [s5]}
+      - {id: e6, operator: AND, operands: [e3, e4, e5]}
+      - {id: e7, operator: ATOM, operands: [s6]}
+      - {id: e8, operator: ATOM, operands: [s7]}
+      - {id: e9, operator: ATOM, operands: [s8]}
+      - {id: e10, operator: ATOM, operands: [s9]}
+      - {id: e11, operator: ATOM, operands: [s10]}
+      - {id: e12, operator: ATOM, operands: [s11]}
+      - {id: e13, operator: ATOM, operands: [s12]}
+      - {id: e14, operator: AND, operands: [e1, e7, e8, e9, e10, e11, e12, e13]}
+    rules:
+      - {id: r1, constraint_root: e14, antecedent_root: e2, consequent_root: e6, relation: 导致, evidence_refs: [unit_003094]}
+
+  - context_package_id: context_000124
+    purpose: OR约束作用于一条共享趋势规则，电源实体保持独立
+    statements:
+      - {id: s1, object: 焊接电源, state: 正弦波, normalized_state: 正弦波}
+      - {id: s2, object: 焊接电源, state: SCR方波, normalized_state: SCR方波}
+      - {id: s3, object: 焊接电源, state: IGBT方波, normalized_state: IGBT方波}
+      - {id: s4, object: 焊接电流, state: 增大, normalized_state: 增大}
+      - {id: s5, object: 再引燃电压, state: 下降, normalized_state: 下降}
+    constraints:
+      - {id: c1, statement_id: s1, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_000722]}
+      - {id: c2, statement_id: s2, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_000722]}
+      - {id: c3, statement_id: s3, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_000722]}
+    expressions:
+      - {id: e1, operator: ATOM, operands: [s1]}
+      - {id: e2, operator: ATOM, operands: [s2]}
+      - {id: e3, operator: ATOM, operands: [s3]}
+      - {id: e4, operator: OR, operands: [e1, e2, e3]}
+      - {id: e5, operator: ATOM, operands: [s4]}
+      - {id: e6, operator: ATOM, operands: [s5]}
+    rules:
+      - {id: r1, constraint_root: e4, antecedent_root: e5, consequent_root: e6, relation: 导致, evidence_refs: [unit_000722]}
+
+  - context_package_id: context_000318
+    purpose: 约束、同层并列结果和下游机理链同时存在
+    statements:
+      - {id: s1, object: 气体流量, state: 一定, normalized_state: 一定}
+      - {id: s2, object: 喷嘴直径, state: 过小, normalized_state: 过小}
+      - {id: s3, object: 保护区域, state: 小, normalized_state: 小}
+      - {id: s4, object: 气流速度, state: 过高, normalized_state: 过高}
+      - {id: s5, object: 保护气流, state: 形成紊流, normalized_state: 形成紊流}
+    constraints:
+      - {id: c1, statement_id: s1, origin: core_text, decision: applied, applies_to: [r1, r2], evidence_refs: [unit_001857]}
+    expressions:
+      - {id: e1, operator: ATOM, operands: [s1]}
+      - {id: e2, operator: ATOM, operands: [s2]}
+      - {id: e3, operator: ATOM, operands: [s3]}
+      - {id: e4, operator: ATOM, operands: [s4]}
+      - {id: e5, operator: AND, operands: [e3, e4]}
+      - {id: e6, operator: ATOM, operands: [s5]}
+    rules:
+      - {id: r1, constraint_root: e1, antecedent_root: e2, consequent_root: e5, relation: 导致, evidence_refs: [unit_001857]}
+      - {id: r2, constraint_root: e1, antecedent_root: e4, consequent_root: e6, relation: 导致, evidence_refs: [unit_001857]}
+
+  - context_package_id: context_000396
+    purpose: 约束作用域下的事件级XOR
+    statements:
+      - {id: s1, object: 钨极, state: 与空气接触, normalized_state: 与空气接触}
+      - {id: s2, object: 引弧事件, state: 发生, normalized_state: 发生}
+      - {id: s3, object: 电弧, state: 未引燃, normalized_state: 未引燃}
+      - {id: s4, object: 电弧, state: 引燃后非常暴躁, normalized_state: 引燃后非常暴躁}
+    constraints:
+      - {id: c1, statement_id: s1, origin: core_text, decision: applied, applies_to: r1, evidence_refs: [unit_002239]}
+    expressions:
+      - {id: e1, operator: ATOM, operands: [s1]}
+      - {id: e2, operator: ATOM, operands: [s2]}
+      - {id: e3, operator: ATOM, operands: [s3]}
+      - {id: e4, operator: ATOM, operands: [s4]}
+      - {id: e5, operator: XOR, operands: [e3, e4]}
+    rules:
+      - {id: r1, constraint_root: e1, antecedent_root: e2, consequent_root: e5, relation: 产生, evidence_refs: [unit_002239]}
+
+records:
+  - context_package_id: context_000004
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 由于气体保护焊的电流密度大，又是明弧，所以弧光辐射强烈。
+    propositions:
+      A: 气体保护焊|电流密度大
+      B: 气体保护焊|明弧
+      C: 弧光辐射|强烈
+    conceptual_expression: (A AND B) -> C
+    reason: 拆成A->C和B->C会错误声称任一条件单独充分。
+    construction_effect: 两条错误的独立因果规则收敛为一条共同前提规则。
+
+  - context_package_id: context_000014
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 电弧空间同时存在几种电离电压不同的气体，且低电离电压气体供应充分时，带电粒子主要由该气体电离提供。
+    propositions:
+      A: 电弧空间|同时存在多种不同电离电压气体
+      B: 低电离电压气体|供应充分
+      C: 带电粒子|主要由低电离电压气体电离提供
+    conceptual_expression: (A AND B) -> C
+    reason: “供应充分”不能脱离多气体共存场景单独成立。
+    construction_effect: 防止作用域丢失，不以压缩为主要目的。
+
+  - context_package_id: context_000069
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: A粒子动能大于e²/r，但与C粒子碰撞并传出大部分动能，剩余动能小于e²/r时，A与B也可复合。
+    propositions:
+      A: A粒子|初始动能大于e²/r
+      B: A粒子|与C粒子碰撞并传出大部分动能
+      C: A粒子|剩余动能小于e²/r
+      D: A粒子与B粒子|产生复合
+    conceptual_expression: (A AND B AND C) -> D
+    reason: 当前两条R把必要条件拆开，任一条都不足以推出复合。
+    construction_effect: 三段条件合为一个闭合前提，消除虚假充分条件。
+
+  - context_package_id: context_000074
+    category: joint_inputs
+    candidate_logic: NESTED
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 当阴极材料为W、C且电流较小时，或阴极材料采用低熔点Al、Cu、Fe时，阴极表面温度不能升得很高。
+    propositions:
+      A: 阴极材料|W或C
+      B: 焊接电流|较小
+      C: 阴极材料|低熔点Al、Cu或Fe
+      D: 阴极表面温度|受限不能升高
+    conceptual_expression: ((A AND B) OR C) -> D
+    reason: W、C材料分支还需要小电流，低熔点材料分支不依赖该条件。
+    construction_effect: 当前两个规则组重复的后续机理链可以共享一次。
+
+  - context_package_id: context_000126
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 同时施加130V电源电压脉冲和300A电流脉冲，可以在15A焊接电流下获得稳定再引燃。
+    propositions:
+      A: 电源电压脉冲|130V
+      B: 电流脉冲|300A
+      C: 焊接电流|15A
+      D: 电弧再引燃过程|稳定
+    conceptual_expression: (A AND B AND C) -> D
+    reason: 电压脉冲和电流脉冲是明示的联合措施。
+    construction_effect: 阻止模型把任一脉冲单独抽成充分条件。
+
+  - context_package_id: context_000400
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 薄板焊接时如果工件具备装夹条件，应利用夹具进行焊接。
+    propositions:
+      A: 焊接对象|薄板
+      B: 工件|具备装夹条件
+      C: 焊接方式|利用夹具
+    conceptual_expression: constraint(A) scopes (B -> C)
+    reason: 薄板是规则适用场景，具备装夹条件才是触发采用夹具的前件；两者都不可缺，但图中角色不同。
+    construction_effect: 避免把“具备装夹条件”推广到所有焊件，同时不把薄板场景误当作直接原因。
+
+  - context_package_id: context_000449
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 当某种元素浓度越大和它与氧的结合能力越强时，这种元素越容易氧化。
+    propositions:
+      A: 合金元素|浓度越大
+      B: 合金元素|与氧结合能力越强
+      C: 合金元素|越容易氧化
+    conceptual_expression: (A AND B) -> C
+    reason: 原文将浓度和亲氧能力作为共同判断条件。
+    construction_effect: 当前两条独立R改为一个联合前提，避免过度断言。
+
+  - context_package_id: context_000490
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 在小电流和低电压的C区，电弧呈短路过渡。
+    propositions:
+      A: 焊接电流|小
+      B: 电弧电压|低
+      C: 熔滴过渡类型|短路过渡
+    conceptual_expression: (A AND B) -> C
+    reason: 过渡区域由电流和电压共同确定。
+    construction_effect: 保留二维参数区间，不拆成两个一维充分条件。
+
+  - context_package_id: context_000589
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 随着焊接电流增加，在电弧电压适当匹配的情况下，熔深、熔宽和余高都增大。
+    propositions:
+      A: 焊接电流|增加
+      B: 电弧电压|适当匹配
+      C: 焊缝尺寸属性|增大
+    conceptual_expression: constraint(B) scopes (A -> C)
+    reason: 电压适配是电流趋势成立的适用约束，不是与电流增加并列的因果输入。
+    construction_effect: 修正当前遗漏电压匹配条件的三条趋势规则，并保留约束和原因的角色差异。
+
+  - context_package_id: context_000595
+    category: joint_inputs
+    candidate_logic: AND
+    logic_position: antecedent
+    decision: required_for_semantics
+    source_excerpt: 空气流动速度大于2m/s时，在使用正常保护气流量时，焊缝中气孔明显增加。
+    propositions:
+      A: 空气流动速度|大于2m/s
+      B: 保护气体流量|正常
+      C: 焊缝气孔|明显增加
+    conceptual_expression: constraint(B) scopes (A -> C)
+    reason: “正常保护气流量”是该观测结论的实验条件，而风速阈值是规则前件。
+    construction_effect: 修正当前仅保留风速阈值导致的过度泛化，同时避免把实验条件误标为原因。
+
+  - context_package_id: context_000124
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: condition
+    decision: useful_for_compaction
+    source_excerpt: 无论正弦波、SCR方波还是IGBT方波电源，都随焊接电流增大而使再引燃电压下降。
+    propositions:
+      A: 焊接电源|正弦波
+      B: 焊接电源|SCR方波
+      C: 焊接电源|IGBT方波
+      D: 焊接电流增加|导致再引燃电压下降
+    conceptual_expression: (A OR B OR C) scopes D
+    reason: 三种电源不能同时成立，但共享完全相同的规则。
+    construction_effect: 三个条件组和三条重复R可压缩成一个带备选作用域的规则。
+
+  - context_package_id: context_000146
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: antecedent
+    decision: useful_for_compaction
+    source_excerpt: 阴极区可能采用电场发射，也可能形成等离子型导电机构，结果都是电子流比率减少、正离子比率增加。
+    propositions:
+      A: 阴极导电机构|电场发射
+      B: 阴极导电机构|等离子型
+      C: 阴极发射电子流比率|减少
+      D: 接受正离子比率|增加
+    conceptual_expression: (A OR B) -> (C and D)
+    reason: 两条备选途径共享同一结果描述。
+    construction_effect: 可减少两套重复结果；结果是否总是共同成立需保持原文措辞。
+
+  - context_package_id: context_000169
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 质量要求低时可采用纯CO2或CO2+O2；要求较高时可采用Ar+O2或Ar+CO2。
+    propositions:
+      A: 焊接质量要求|低
+      B: 保护气体|纯CO2
+      C: 保护气体|CO2+O2
+      D: 焊接质量要求|高
+      E: 保护气体|Ar+O2
+      F: 保护气体|Ar+CO2
+    conceptual_expression: A -> (B OR C); D -> (E OR F)
+    reason: 每个质量等级对应一个可选方案集合，而非要求同时采用两种气体方案。
+    construction_effect: 四条选择规则可压缩成两个方案规则，实体仍独立。
+
+  - context_package_id: context_000173
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: antecedent
+    decision: useful_for_compaction
+    source_excerpt: 焊接铜时加入He或N2后，因能提高电弧功率，所以可以降低预热温度。
+    propositions:
+      A: 保护气体|加入He
+      B: 保护气体|加入N2
+      C: 电弧功率|提高
+      D: 焊件预热温度|降低
+    conceptual_expression: (A OR B) -> C -> D
+    reason: 两种添加方案共享完整机理链。
+    construction_effect: 两套相同机理链可以共享一次。
+
+  - context_package_id: context_000357
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 铝焊件为负时，需要外部施加高频高压或高压脉冲使电弧再引燃。
+    propositions:
+      A: 铝焊件|为负
+      B: 稳弧措施|高频高压
+      C: 稳弧措施|高压脉冲
+      D: 电弧|再引燃
+    conceptual_expression: A -> choose(B OR C) -> D
+    reason: 原文明确给出两种备选稳弧措施。
+    construction_effect: 两条措施规则可组成一个选择集合，但不能把两个设备实体合并。
+
+  - context_package_id: context_000409
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: antecedent
+    decision: useful_for_compaction
+    source_excerpt: 熔池金属中存在某种微量元素或接触活性气氛时，表面张力温度系数转为正。
+    propositions:
+      A: 熔池金属|存在某种微量元素
+      B: 熔池金属|接触活性气氛
+      C: 表面张力温度系数|转为正
+    conceptual_expression: (A OR B) -> C
+    reason: 两个独立触发因素共享后续表面张力流机理。
+    construction_effect: 后续五条机理链可以只构建一次。
+
+  - context_package_id: context_000457
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: antecedent
+    decision: useful_for_compaction
+    source_excerpt: 其他条件相同时，焊接电流增加或电弧电压减小，元素烧损减少。
+    propositions:
+      A: 焊接电流|增加
+      B: 电弧电压|减小
+      C: 元素烧损|减少
+    conceptual_expression: (A OR B) -> C
+    reason: 两个独立参数变化均能产生相同趋势。
+    construction_effect: 两条同结果R压缩为一条备选输入规则。
+
+  - context_package_id: context_000487
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 密闭容器内或通风不良场所，尽量采用实心焊丝或低烟尘药芯焊丝。
+    propositions:
+      A: 作业场所|密闭容器内
+      B: 作业场所|通风不良
+      C: 焊丝类型|实心焊丝
+      D: 焊丝类型|低烟尘药芯焊丝
+    conceptual_expression: (A OR B) -> choose(C OR D)
+    reason: 输入场所和输出焊丝类型均为备选集合。
+    construction_effect: 笛卡尔展开需要四条规则，逻辑组合可保留一条选择规则。
+
+  - context_package_id: context_000507
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: antecedent
+    decision: useful_for_compaction
+    source_excerpt: 焊丝或焊件含油、锈、脏物，或焊丝含碳量高、脱氧元素不足时，会析出CO气体并伴随细小飞溅。
+    propositions:
+      A: 焊丝或焊件|含油锈脏物
+      B: 焊丝|含碳量高
+      C: 焊丝|脱氧元素不足
+      D: CO气体|析出
+      E: 飞溅|细小
+    conceptual_expression: (A OR B OR C) -> D and E
+    reason: 多个缺陷来源共享冶金反应结果。
+    construction_effect: 三套重复结果规则压缩为一个备选原因集合。
+
+  - context_package_id: context_000539
+    category: alternative_inputs
+    candidate_logic: OR
+    logic_position: antecedent
+    decision: useful_for_compaction
+    source_excerpt: 即将爆断时加负脉冲或保持较低峰值电流可降低飞溅；增加燃弧能量可通过三种备选方式。
+    propositions:
+      A: 控制措施|加负脉冲
+      B: 控制措施|保持较低峰值电流
+      C: 飞溅率|降低
+      D: 控制措施|调节下降斜率
+      E: 控制措施|提高稳定电流
+      F: 控制措施|附加脉冲电流
+      G: 燃弧能量|增加
+    conceptual_expression: (A OR B) -> C; (D OR E OR F) -> G
+    reason: 两组备选措施分别共享完全相同的控制目标。
+    construction_effect: 当前五条措施到结果的规则可压缩成两条。
+
+  - context_package_id: context_000015
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: consequent
+    decision: prefer_atomic_rules
+    source_excerpt: 外来能量作用可能使中性粒子电离；能量不足以使电子完全脱离但能跃迁时则产生激励。
+    propositions:
+      A: 中性粒子|受外来能量作用
+      B: 中性粒子|电离
+      C: 中性粒子|激励
+    conceptual_expression: A -> branch(B, C) governed by energy thresholds
+    reason: 两个结果由能量是否达到不同阈值决定，直接写XOR会丢失真正的判定条件。
+    construction_effect: 应补齐阈值条件后保留两条原子规则。
+
+  - context_package_id: context_000017
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: classification
+    decision: prefer_atomic_rules
+    source_excerpt: 气体粒子碰撞分为弹性碰撞和非弹性碰撞，分别由较低和较大动能产生。
+    propositions:
+      A: 粒子碰撞|发生
+      B: 碰撞类型|弹性
+      C: 碰撞类型|非弹性
+    conceptual_expression: A classified as B or C by kinetic energy
+    reason: 这是有判别条件的分类体系，不是一个待执行的互斥结果规则。
+    construction_effect: 继续用“动能低->弹性、动能高->非弹性”两条规则更清楚。
+
+  - context_package_id: context_000022
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: consequent
+    decision: needs_domain_review
+    source_excerpt: 非弹性碰撞可能引起气体粒子的激励或电离。
+    propositions:
+      A: 气体粒子|发生非弹性碰撞
+      B: 气体粒子|激励
+      C: 气体粒子|电离
+    conceptual_expression: A -> B or C
+    reason: 当前包没有证明同一次碰撞下两者必然互斥，也没有给出完整能量分界。
+    construction_effect: 在领域确认前保持两条“可能引起”规则或原文组合状态。
+
+  - context_package_id: context_000186
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: consequent
+    decision: prefer_atomic_rules
+    source_excerpt: 两个平行电弧根据焊接电流方向不同，相互间可能产生吸引或排斥。
+    propositions:
+      A: 两个平行电弧|存在
+      B: 电弧间作用|吸引
+      C: 电弧间作用|排斥
+    conceptual_expression: A -> branch(B, C) governed by current directions
+    reason: 图中电流方向才决定具体分支，只写XOR不能表达方向到结果的映射。
+    construction_effect: 应先从图片恢复方向条件，再构建两条分支规则。
+
+  - context_package_id: context_000364
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: classification
+    decision: prefer_atomic_rules
+    source_excerpt: 方波交流TIG焊主要实现方法有晶闸管式和IGBT二次逆变式两种。
+    propositions:
+      A: 方波交流TIG焊|实现方法
+      B: 实现方法|晶闸管式
+      C: 实现方法|IGBT二次逆变式
+    conceptual_expression: A contains alternatives B and C
+    reason: 这是方法枚举，系统层面两类设备可以并存，不是一次事件的互斥输出。
+    construction_effect: 使用两条“包含/分类为”关系，不引入XOR。
+
+  - context_package_id: context_000396
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: consequent
+    decision: required_for_semantics
+    source_excerpt: 钨极与空气接触状态下引弧，一种可能未引燃，另一种可能引燃后非常暴躁。
+    propositions:
+      A: 钨极|与空气接触状态下引弧
+      B: 电弧|未被引燃
+      C: 电弧|引燃后非常暴躁
+    conceptual_expression: A -> (B XOR C)
+    reason: 对一次引弧事件而言，“未引燃”和“引燃后暴躁”不能同时成立。
+    construction_effect: 当前两条普通R会错误暗示同一次事件可同时产生两个结果。
+
+  - context_package_id: context_000495
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: classification
+    decision: prefer_atomic_rules
+    source_excerpt: 短路时间小于2ms为瞬时短路，大于2ms为正常短路。
+    propositions:
+      A: 短路时间|小于2ms
+      B: 短路类型|瞬时短路
+      C: 短路时间|大于2ms
+      D: 短路类型|正常短路
+    conceptual_expression: A -> B; C -> D
+    reason: 阈值条件已经自然分开两类，且等于2ms的归属未说明。
+    construction_effect: 增加XOR会制造分支完备性，不如两条阈值规则准确。
+
+  - context_package_id: context_000505
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: consequent
+    decision: required_for_semantics
+    source_excerpt: 电磁收缩力作用下有两种可能现象：熔滴被排斥开，或短路小桥因过电流爆炸。
+    propositions:
+      A: 电磁收缩力|作用
+      B: 熔滴|被排斥开
+      C: 短路小桥|因过电流爆炸
+    conceptual_expression: A -> (B XOR C)
+    reason: 原文明确以“一种、另一种”描述一次短路事件的两个分支。
+    construction_effect: 一条互斥分支规则比两条看似同时可成立的因果规则更忠实。
+
+  - context_package_id: context_000560
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: consequent
+    decision: needs_domain_review
+    source_excerpt: 熔滴可沿渣柱滑落到熔池中，或者在电磁力作用下自由飞落到熔池中。
+    propositions:
+      A: 熔滴|旋转过渡
+      B: 熔滴|沿渣柱滑落
+      C: 熔滴|自由飞落
+    conceptual_expression: A -> B or C
+    reason: 单个熔滴的路径可能互斥，但一段焊接过程中两种路径可能先后出现。
+    construction_effect: 需要先确定规则粒度是“单个熔滴事件”还是“焊接过程”。
+
+  - context_package_id: context_000673
+    category: exclusive_outputs
+    candidate_logic: XOR
+    logic_position: classification
+    decision: needs_domain_review
+    source_excerpt: 铝合金射滴过渡因合金元素不同，可能为再引燃型或引渡型。
+    propositions:
+      A: 铝合金射滴过渡|发生
+      B: 过渡形式|再引燃型
+      C: 过渡形式|引渡型
+    conceptual_expression: A -> branch(B, C) governed by alloying elements
+    reason: 文本说分支由合金元素决定，但当前包没有给出元素到形式的映射。
+    construction_effect: 可记录互斥分类候选，不能替代缺失的选择条件。
+
+  - context_package_id: context_000001
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 使用逆变式CO2焊机时，飞溅减少，焊缝成形改善。
+    propositions:
+      A: 焊机|逆变式CO2焊机
+      B: 飞溅|减少
+      C: 焊缝成形|改善
+    conceptual_expression: A -> (B AND C)
+    reason: 两个结果是同一方法的并列效果，原文没有把二者串成因果链。
+    construction_effect: 两条同输入R可压缩为一条并列结果规则。
+
+  - context_package_id: context_000018
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: needs_domain_review
+    source_excerpt: 电子向中性粒子传递动能并转换为内能，使其激励与电离。
+    propositions:
+      A: 中性粒子内能|增加
+      B: 中性粒子|激励
+      C: 中性粒子|电离
+    conceptual_expression: A -> B and/or C
+    reason: “激励与电离”可能描述连续过程，也可能概括不同能量下的结果。
+    construction_effect: 需要结合前后能量阈值判断，当前不宜压缩成确定并列结果。
+
+  - context_package_id: context_000130
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 随焊接电流增加，阴极与阳极压降都减小，电弧电压减小并呈负阻特性。
+    propositions:
+      A: 焊接电流|增加
+      B: 阴极压降|减小
+      C: 阳极压降|减小
+      D: 电弧电压|减小
+    conceptual_expression: A -> (B AND C); (B and C and 弧柱压降下降) -> D
+    reason: 阴极和阳极压降是直接并列结果，但电弧电压属于后续汇总结果。
+    construction_effect: 只合并同层结果，保留电弧电压和负阻特性的机理链。
+
+  - context_package_id: context_000158
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 氦弧热功率较大，对焊件热输入较大，并允许焊件表面存在少量氧化物。
+    propositions:
+      A: 氦弧|热功率较大
+      B: 焊件|热输入较大
+      C: 焊件表面|允许少量氧化物
+    conceptual_expression: A -> (B AND C)
+    reason: 两个结果共享直接原因且原文并列陈述。
+    construction_effect: 两条同输入R可压缩为一条并列结果规则。
+
+  - context_package_id: context_000250
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 电弧电压减小时，锥形电弧变为钟罩形、张开角增大、焊丝端头覆盖面积扩大。
+    propositions:
+      A: 电弧电压|减小
+      B: 电弧形态|由锥形变为钟罩形
+      C: 电弧张开角|增大
+      D: 焊丝端头覆盖面积|扩大
+    conceptual_expression: A -> (B AND C AND D)
+    reason: 三个视觉变化属于同一趋势下的并列结果。
+    construction_effect: 三条同输入R可压缩为一条，同时保留三个独立结果节点。
+
+  - context_package_id: context_000318
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 气体流量一定时，喷嘴直径过小会使保护区域小，且因气流速度过高形成紊流。
+    propositions:
+      A: 喷嘴直径|过小
+      B: 保护区域|小
+      C: 气流速度|过高
+    conceptual_expression: A -> (B AND C)
+    reason: 两个直接结果同时受“气体流量一定”约束。
+    construction_effect: 两条同输入R可压缩，但气流速度到紊流的后续链必须保留。
+
+  - context_package_id: context_000422
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: 粗丝CO2焊使用较大电流，电流密度100~300A/mm²、熔化系数15~26g/(A·h)，同时熔深大。
+    propositions:
+      A: 焊接方法|粗丝CO2焊
+      B: 焊接电流|较大
+      C: 电流密度|100~300A/mm²
+      D: 熔化系数|15~26g/(A·h)
+      E: 熔深|大
+    conceptual_expression: A -> attribute_bundle(B, C, D, E)
+    reason: 这是同一方法的并列属性包，不是属性之间的因果链。
+    construction_effect: 四条属性规则可形成一个组合事实，但每个属性仍需独立可查询。
+
+  - context_package_id: context_000770
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: prefer_atomic_rules
+    source_excerpt: 加少量氧化性气体降低表面张力，从而降低临界电流并提高过渡稳定性。
+    propositions:
+      A: 氧化性气体|加入少量
+      B: 表面张力|降低
+      C: 射流过渡临界电流|降低
+      D: 熔滴过渡稳定性|提高
+    conceptual_expression: A -> B; B -> (C and D)
+    reason: C和D是表面张力降低的下游结果，不能全部平铺成A的并列直接输出。
+    construction_effect: 只允许在B之后合并C、D，优先保留机理链。
+
+  - context_package_id: context_000804
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: TIME焊能提高焊丝熔化速度和熔敷效率，也就是提高焊接效率。
+    propositions:
+      A: 焊接方法|TIME焊
+      B: 焊丝熔化速度|提高
+      C: 熔敷效率|提高
+      D: 焊接效率|提高
+    conceptual_expression: A -> (B AND C); C -> D
+    reason: B和C是TIME焊的并列直接结果，不能误写成B导致C。
+    construction_effect: 用一个并列结果规则修正当前虚假因果，再保留效率链。
+
+  - context_package_id: context_000854
+    category: parallel_outputs
+    candidate_logic: AND
+    logic_position: consequent
+    decision: useful_for_compaction
+    source_excerpt: DC脉冲焊熔深较大，下板易烧穿且上板可能烧断；AC脉冲焊熔深浅而不易烧穿和烧断。
+    propositions:
+      A: 焊接方法|DC脉冲焊
+      B: 下板|易烧穿
+      C: 上板|易烧断
+      D: 焊接方法|AC脉冲焊
+      E: 烧穿|不易产生
+      F: 烧断|不易产生
+    conceptual_expression: A -> (B AND C); D -> (E AND F)
+    reason: 每种焊法分别对应两个并列成形结果。
+    construction_effect: 四条结果R可压缩成两条，同时保留上下板和缺陷实体。

@@ -1,0 +1,122 @@
+dataset:
+  title: 复杂逻辑规则的人读格式
+  date: 2026-08-26
+  status: design_only
+  source_population: 911个真实上下文包
+  note: C和R由同一次抽取产生并保存在同一个规则组；本格式面向模型输出与人工复核，入图表达式树由解析器派生。
+
+format:
+  C: '规则适用约束；没有约束时为空列表，界面和DSL可显示为“C: 无”。'
+  R: 始终是规则列表；一个C可以依次约束多条R。
+  R.input: 关系的输入或前件。
+  R.relation: 输入到输出之间的关系。
+  R.output: 关系的输出或后件。
+  all_of: 所列完整对象状态命题需要共同成立。
+  any_of: 所列完整对象状态命题至少一个成立，不表示互斥。
+  one_of: 同一次、同一粒度事件只能出现一个结果；仅在证据明确时使用。
+  item: 每个列表项必须是完整的“对象|状态”，不能是裸实体或裸数值。
+
+cases:
+  - context_package_id: context_000004
+    core_unit_id: unit_000168
+    core_excerpt: 由于气体保护焊的电流密度大，又是明弧，所以弧光辐射强烈。
+    rule_groups:
+      - C: []
+        R:
+          - input:
+              all_of:
+                - 气体保护焊|电流密度大
+                - 气体保护焊|明弧
+            relation: 导致
+            output: 弧光辐射|强烈
+
+  - context_package_id: context_000400
+    core_unit_id: unit_002255
+    core_excerpt: 薄板焊接时如果工件具备装夹条件，应考虑利用夹具进行焊接。
+    rule_groups:
+      - C:
+          all_of:
+            - 焊接对象|薄板
+        R:
+          - input: 工件|具备装夹条件
+            relation: 要求
+            output: 焊接方式|利用夹具
+
+  - context_package_id: context_000589
+    core_unit_id: unit_003094
+    core_excerpt: 在给定焊丝、气体、板厚、材料、焊速和焊接形式下，随着焊接电流增加，在电弧电压适当匹配的情况下，熔深、熔宽和余高都增大。
+    rule_groups:
+      - C:
+          all_of:
+            - 电弧电压|适当匹配
+            - 焊丝直径|1.2mm
+            - 焊丝类型|实心焊丝
+            - 保护气体|纯CO2
+            - 板厚|9mm
+            - 母材|低碳钢板
+            - 焊接速度|0.4m/min且保持不变
+            - 焊接形式|平板堆焊
+        R:
+          - input: 焊接电流|增加
+            relation: 导致
+            output:
+              all_of:
+                - 熔深|增大
+                - 熔宽|增大
+                - 余高|增大
+
+  - context_package_id: context_000124
+    core_unit_id: unit_000722
+    core_excerpt: 无论正弦波、SCR方波还是IGBT方波电源，都随焊接电流增大而使再引燃电压下降。
+    rule_groups:
+      - C:
+          any_of:
+            - 焊接电源|正弦波
+            - 焊接电源|SCR方波
+            - 焊接电源|IGBT方波
+        R:
+          - input: 焊接电流|增大
+            relation: 导致
+            output: 再引燃电压|下降
+
+  - context_package_id: context_000318
+    core_unit_id: unit_001857
+    core_excerpt: 在气体流量一定时，喷嘴直径过小，保护区域小，且因气流速度过高而形成紊流。
+    rule_groups:
+      - C:
+          all_of:
+            - 气体流量|一定
+        R:
+          - input: 喷嘴直径|过小
+            relation: 导致
+            output:
+              all_of:
+                - 保护区域|小
+                - 气流速度|过高
+          - input: 气流速度|过高
+            relation: 导致
+            output: 保护气流|形成紊流
+
+  - context_package_id: context_000396
+    core_unit_id: unit_002239
+    core_excerpt: 在钨极与空气接触状态下引弧，一种可能未引燃，另一种可能引燃后非常暴躁。
+    rule_groups:
+      - C:
+          all_of:
+            - 钨极|与空气接触
+        R:
+          - input: 引弧事件|发生
+            relation: 产生
+            output:
+              one_of:
+                - 电弧|未引燃
+                - 电弧|引燃后非常暴躁
+
+parser_projection:
+  description: 以下步骤由解析器完成，不要求模型在YAML中输出节点ID、哈希或图边。
+  steps:
+    - 扫描C、R.input和R.output中的每个对象状态项，生成或复用StateExpression。
+    - 把all_of、any_of、one_of递归转换为AND、OR、XOR LogicExpression。
+    - 将C的表达式根连接到Rule.HAS_CONSTRAINT_EXPR。
+    - 将input的表达式根连接到Rule.HAS_ANTECEDENT_EXPR。
+    - 将output的表达式根连接到Rule.HAS_CONSEQUENT_EXPR。

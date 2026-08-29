@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import io
-import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,8 +50,6 @@ class ImageAdapter:
                     output = io.BytesIO()
                     image.convert("RGB").save(output, format="PNG")
                     raw, mime_type = output.getvalue(), "image/png"
-        except ImageAdapterError:
-            raise
         except Exception as error:
             raise ImageAdapterError("image_decode_failed", f"Cannot decode image {path}: {error}") from error
         encoded = base64.b64encode(raw).decode("ascii")

@@ -4,8 +4,8 @@ import unittest
 import re
 from pathlib import Path
 
-from constella.rule_extraction.parser import parse_final_expression
-from constella.rule_extraction.generator import load_prompt
+from constella.rule_extraction.parser import RuleParseError, parse_final_expression
+from constella.rule_extraction.generator import RuleGenerator, load_prompt
 from constella.rule_extraction.pipeline import _load_model_output, _store_model_output
 from constella.rule_extraction.reflection_patch import ReflectionPatchError, addressed_draft, apply_reflection_patch
 
@@ -37,22 +37,40 @@ R: 焊接回路|燃弧 —[U=[R+B]I]→ 电压平衡关系|成立"""
         formula = load_prompt(prompt_dir / "rule_generator_formula_v1.yaml")
         reflector = load_prompt(prompt_dir / "rule_reflector_full_v1.yaml")
 
-        self.assertEqual(4, base["version"])
+        self.assertEqual(6, base["version"])
+        self.assertEqual(2, text["version"])
         self.assertEqual(5, reflector["version"])
-        self.assertIn("原图用于核对OCR易混字符", image["system"])
+        self.assertIn("不再请求或假定可见原图", image["system"])
         self.assertIn("不得猜测", base["system"])
         self.assertIn("母材材质|低碳钢", base["system"])
-        self.assertIn("约束归位", base["system"])
-        self.assertIn("包约束及来源范围", base["system"])
+        self.assertIn("C/R归位", base["system"])
+        self.assertIn("场景、适用范围或实施前提", base["system"])
         self.assertIn("对象和状态完全重复", base["system"])
-        self.assertIn("标题和临近正文共同限定", load_prompt(
-            prompt_dir / "rule_generator_table_v1.yaml"
-        )["system"])
+        self.assertIn("只有原文明示“同时、共同、配合", base["system"])
+        self.assertIn("当前DSL不引入OR符号", base["system"])
+        self.assertIn("无法证明多个因素必须同时成立时，不使用", base["system"])
+        self.assertIn("C允许为空", base["system"])
+        self.assertIn("不要为了证明C而额外生成入口R", base["system"])
         self.assertIn("没有共同约束时写“C: 无”", base["system"])
+        self.assertIn("同一对象的多个互斥取值逐值拆分", base["system"])
+        self.assertIn("熔化系数|15~26g/(A·h)", base["system"])
         self.assertIn("复杂截面药芯焊丝|挺度 —[优于]→ O形药芯焊丝|挺度", text["system"])
+        self.assertIn("真实上下文包 context_000126", base["system"])
+        self.assertIn("真实上下文包 context_000539", base["system"])
+        self.assertIn("真实上下文包 context_000595", base["system"])
+        self.assertIn("真实上下文包 context_000422", base["system"])
+        self.assertIn("真实上下文包 context_000400", base["system"])
+        self.assertIn("焊接对象|薄板 + 工件|具备装夹条件", base["system"])
+        self.assertIn("保护气流|分散 —[使]→ 熔池|暴露在空气中", base["system"])
+        table = load_prompt(prompt_dir / "rule_generator_table_v1.yaml")
+        self.assertIn("统一交由base决定C/R", table["system"])
+        self.assertIn("C/R归位、备选拆分、共同前提和因果链统一执行base规则", text["system"])
+        self.assertIn("C/R归位统一执行base规则", formula["system"])
         self.assertIn("NO_CHANGES不是预设结论", reflector["system"])
         self.assertIn("只改措辞、同义词、语序、标点", reflector["system"])
         self.assertIn("完整语义稀疏补丁审核器", reflector["system"])
+        self.assertIn("C作用域", reflector["system"])
+        self.assertIn("多前提", reflector["system"])
         self.assertIn("正确内容不重新输出", reflector["system"])
         self.assertIn("DELETE_R G/R", reflector["system"])
         self.assertIn("真实上下文包 context_000540", reflector["system"])
@@ -181,6 +199,12 @@ R: 弧长|改变 —[导致]→ 控制法|不能自动调节弧长"""
             apply_reflection_patch("这不是可编辑DSL", f"REPLACE_ALL\n{replacement}\nEND_ALL"),
         )
 
+    def test_noncanonical_generator_draft_is_sent_to_reflector_for_replace_all(self) -> None:
+        draft = "规则组1\nC: 材料|铝合金\nC: 电流|交流\nR: A|1 —[导致]→ B|2"
+        block = RuleGenerator._reflection_blocks([], draft)[0]["text"]
+        self.assertIn("本次只能输出REPLACE_ALL...END_ALL", block)
+        self.assertIn("规则组1\nC: 材料|铝合金\nC: 电流|交流", block)
+
     def test_reflection_canonicalizes_missing_constraint_before_rules(self) -> None:
         draft = "规则组1\nR: A|1 —[导致]→ B|2\nR: B|2 —[导致]→ C|3"
         self.assertEqual(
@@ -299,6 +323,29 @@ R: 气体保护焊 —同时→ 产生焊接烟尘
         self.assertEqual("He 90% + Ar 7.5% + CO2 2.5%", rule.conditions[0].raw_state)
         self.assertEqual(1, len(rule.consequents))
         self.assertEqual("He 90% + Ar 7.5% + CO2 2.5%", rule.consequents[0].raw_state)
+
+    def test_numeric_and_degree_results_are_bound_to_attributes(self) -> None:
+        ruleset = parse_final_expression(
+            "规则组1\nC: 无\n"
+            "R: 焊接方法|粗丝CO2焊 —[对应]→ 熔化系数|15~26g/(A·h)\n"
+            "R: 焊接方法|粗丝CO2焊 —[对应]→ 熔深|大",
+            "context_000422", prompt_id="rule_generator_routed", prompt_version="5", model="qwen",
+        )
+        self.assertEqual("熔化系数", ruleset.rules[0].consequents[0].object)
+        self.assertEqual("15~26g/(A·h)", ruleset.rules[0].consequents[0].raw_state)
+        self.assertEqual("熔深", ruleset.rules[1].consequents[0].object)
+        self.assertEqual("大", ruleset.rules[1].consequents[0].raw_state)
+
+    def test_real_context_000422_bare_values_no_longer_degrade_to_mentioned_objects(self) -> None:
+        for invalid_rule in (
+            "R: 粗丝CO2焊|熔化系数 —[达到]→ 15~26g/(A·h)",
+            "R: 粗丝CO2焊|焊缝熔深 —[状态]→ 大",
+        ):
+            with self.subTest(rule=invalid_rule), self.assertRaises(RuleParseError):
+                parse_final_expression(
+                    f"规则组1\nC: 焊接方法|粗丝CO2焊\n{invalid_rule}",
+                    "context_000422", prompt_id="rule_generator_routed", prompt_version="5", model="qwen",
+                )
 
     def test_same_object_with_different_state_is_not_removed_as_duplicate(self) -> None:
         ruleset = parse_final_expression(

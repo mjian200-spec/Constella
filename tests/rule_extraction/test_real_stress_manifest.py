@@ -17,7 +17,7 @@ class RealStressManifestTests(unittest.TestCase):
     def test_real_manifest_covers_required_asset_types_and_cases(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stress.json"
-            completed = subprocess.run(
+            subprocess.run(
                 [sys.executable, "scripts/inspect_rule_extraction.py", "--context-output-dir", str(OUTPUT), "--output", str(path)],
                 cwd=ROOT, check=True, text=True, capture_output=True,
             )

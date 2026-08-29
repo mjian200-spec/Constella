@@ -131,7 +131,6 @@ def apply_reflection_patch(draft: str, patch: str) -> str:
     group_replacements: dict[str, _Group] = {}
     group_deletions: set[str] = set()
     added_groups: list[_Group] = []
-    replace_all: str | None = None
 
     index = 0
     while index < len(lines):
@@ -199,14 +198,9 @@ def apply_reflection_patch(draft: str, patch: str) -> str:
                 raise ReflectionPatchError("ADD_GROUP must contain one new, unique group")
             added_groups.append(parsed[0])
 
-    if replace_all is not None:
-        if replace_all != "无规则":
-            _parse_groups(replace_all)
-        return replace_all
-
     conflicting_groups = set(group_replacements) | group_deletions
+    edited_rules = set(replacements) | deletions
     for group_id in conflicting_groups:
-        edited_rules = set(replacements) | deletions
         if group_id in set_conditions or group_id in additions or any(key[0] == group_id for key in edited_rules):
             raise ReflectionPatchError(f"Whole-group and entry edits conflict for group {group_id}")
 

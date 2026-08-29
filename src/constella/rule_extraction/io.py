@@ -32,8 +32,7 @@ def export_outputs(output_dir: str | Path, packages: list[dict[str, Any]], resul
         row.update({
             "extraction_status": result.status, "rule_ids": result.rule_ids,
             "failure_stage": result.failure_stage, "failure_code": result.failure_code,
-            "failure_reason": result.failure_reason, "improvement_notes": result.improvement_notes,
-            "run_id": result.run_id,
+            "failure_reason": result.failure_reason, "run_id": result.run_id,
         })
         processed.append(row)
         if result.status == "success":

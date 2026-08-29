@@ -1,10 +1,50 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import unittest
 
 from constella.rule_extraction.image_adapter import ImageAdapter
-from constella.rule_extraction.resolver import DocumentGraphIndex, iter_packages, resolve_package
+from constella.rule_extraction.message_builder import MultimodalMessageBuilder
+from constella.rule_extraction.models import ResolvedAsset, ResolvedContextPackage, ResolvedUnit
+from constella.rule_extraction.pipeline import RuleExtractionRuntime, run_rule_extraction
+from constella.rule_extraction.resolver import (
+    DocumentGraphIndex,
+    is_rule_extraction_package,
+    iter_packages,
+    resolve_package,
+)
+
+
+def test_article_candidates_are_not_rule_extraction_packages() -> None:
+    assert is_rule_extraction_package({"attributes": {"package_type": "rule"}})
+    assert is_rule_extraction_package({"attributes": {"package_type": "formula_context"}})
+    assert is_rule_extraction_package({"attributes": {}})
+    assert not is_rule_extraction_package({"attributes": {"package_type": "article_candidate"}})
+    assert is_rule_extraction_package({"attributes": {
+        "package_type": "article_candidate",
+        "package_role": {"status": "ok", "is_rule_package": True},
+    }})
+    assert not is_rule_extraction_package({"attributes": {
+        "package_type": "rule",
+        "package_role": {"status": "ok", "is_rule_package": False},
+    }})
+
+
+def test_rule_message_uses_resource_textualization_without_an_image_block() -> None:
+    unit = ResolvedUnit(
+        id="u1", type="figure", content="图题", source={"page": 1},
+        attributes={"caption": "图题", "resource_understanding": {"description": "图的文字化结论"}},
+    )
+    package = ResolvedContextPackage(
+        id="p1", core_units=[ResolvedUnit("u0", "passage", "正文", {"page": 1})],
+        support_units=[], constraints=[], assets=[ResolvedAsset(unit, "images/a.png", None, "图题")],
+        unresolved=[], section_path=[], source_package={}, source_fingerprint="x", resolver_version="2",
+    )
+    blocks = MultimodalMessageBuilder().context_content(package)
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert "图的文字化结论" in blocks[0]["text"]
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +63,12 @@ class RealContextInputTests(unittest.TestCase):
         self.assertEqual(["unit_002522"], [unit.id for unit in package.core_units])
         self.assertEqual(2, len(package.constraints))
         self.assertIn("20", str(package.core_units[0].content))
+
+    def test_context_builder_labels_package_constraints_as_candidates(self) -> None:
+        package = resolve_package(self.index, self.packages["context_000465"])
+        text = MultimodalMessageBuilder()._text_context(package)
+        self.assertIn("包条件（已由上游确定作用域）:", text)
+        self.assertIn("来源 Unit:", text)
 
     def test_real_figure_context_has_a_loadable_image(self) -> None:
         package = resolve_package(self.index, self.packages["context_000472"])
@@ -45,3 +91,18 @@ class RealContextInputTests(unittest.TestCase):
         self.assertEqual({"unit_002902", "unit_002904"}, set(formulas))
         self.assertIn(r"\tag {5-30}", formulas["unit_002902"])
         self.assertIn(r"\tag {5-31}", formulas["unit_002904"])
+
+    def test_dry_run_resolves_and_caches_without_creating_extraction_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            runtime = RuleExtractionRuntime(
+                ROOT / "configs" / "rule_extraction", output_dir, dry_run_resolve=True,
+            )
+            report = run_rule_extraction(
+                OUTPUT, runtime, package_ids={"context_000465", "context_000540"},
+            )
+
+            self.assertEqual(2, report["resolved_count"])
+            self.assertEqual(0, report["failed_count"])
+            self.assertFalse((output_dir / "rule_extraction_state.sqlite3").exists())
+            self.assertTrue((output_dir / "cache" / "contexts" / "context_000540.json").is_file())

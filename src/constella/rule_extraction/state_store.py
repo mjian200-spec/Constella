@@ -3,14 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
 from .models import PackageProcessingResult
-
-
-TERMINAL_STATES = {"success", "no_rule", "failed"}
 
 
 class StateStore:
@@ -39,7 +35,7 @@ class StateStore:
         CREATE TABLE IF NOT EXISTS package_states (
           run_id TEXT NOT NULL, context_package_id TEXT NOT NULL, input_fingerprint TEXT NOT NULL,
           status TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, rule_ids_json TEXT NOT NULL DEFAULT '[]',
-          failure_stage TEXT, failure_code TEXT, failure_reason TEXT, improvement_notes_json TEXT NOT NULL DEFAULT '[]',
+          failure_stage TEXT, failure_code TEXT, failure_reason TEXT,
           started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           completed_at TEXT, PRIMARY KEY(run_id, context_package_id)
         );
@@ -48,10 +44,6 @@ class StateStore:
           phase TEXT NOT NULL, attempt INTEGER NOT NULL, model TEXT, prompt_id TEXT, prompt_version TEXT,
           status TEXT NOT NULL, latency_seconds REAL, input_text_chars INTEGER, image_count INTEGER,
           output_chars INTEGER, error_type TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS graph_commits (
-          run_id TEXT NOT NULL, context_package_id TEXT NOT NULL, rule_ids_json TEXT NOT NULL,
-          committed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(run_id, context_package_id)
         );
         """)
         self.connection.commit()
@@ -74,6 +66,23 @@ class StateStore:
     def mark_graph_initialized(self, run_id: str) -> None:
         self.connection.execute("UPDATE runs SET graph_initialized=1,updated_at=CURRENT_TIMESTAMP WHERE run_id=?", (run_id,))
         self.connection.commit()
+
+    def mark_run_running(self, run_id: str) -> None:
+        self.connection.execute(
+            "UPDATE runs SET status='running',completed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE run_id=?",
+            (run_id,),
+        )
+        self.connection.commit()
+
+    def run_elapsed_seconds(self, run_id: str) -> float:
+        row = self.connection.execute(
+            """
+            SELECT MAX(0, (julianday(COALESCE(completed_at,CURRENT_TIMESTAMP))-julianday(started_at))*86400)
+            FROM runs WHERE run_id=?
+            """,
+            (run_id,),
+        ).fetchone()
+        return float(row[0] or 0.0)
 
     def package_state(self, run_id: str, package_id: str) -> sqlite3.Row | None:
         return self.connection.execute(
@@ -109,25 +118,17 @@ class StateStore:
     def set_result(self, result: PackageProcessingResult) -> None:
         self.connection.execute("""
           INSERT INTO package_states(run_id,context_package_id,input_fingerprint,status,rule_ids_json,
-            failure_stage,failure_code,failure_reason,improvement_notes_json,completed_at)
-          VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            failure_stage,failure_code,failure_reason,completed_at)
+          VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
           ON CONFLICT(run_id,context_package_id) DO UPDATE SET
             input_fingerprint=excluded.input_fingerprint,status=excluded.status,rule_ids_json=excluded.rule_ids_json,
             failure_stage=excluded.failure_stage,failure_code=excluded.failure_code,
-            failure_reason=excluded.failure_reason,improvement_notes_json=excluded.improvement_notes_json,
-            updated_at=CURRENT_TIMESTAMP,completed_at=CURRENT_TIMESTAMP
+            failure_reason=excluded.failure_reason,updated_at=CURRENT_TIMESTAMP,completed_at=CURRENT_TIMESTAMP
         """, (
             result.run_id, result.context_package_id, result.input_fingerprint, result.status,
             json.dumps(result.rule_ids, ensure_ascii=False), result.failure_stage, result.failure_code,
-            result.failure_reason, json.dumps(result.improvement_notes, ensure_ascii=False),
+            result.failure_reason,
         ))
-        self.connection.commit()
-
-    def record_graph_commit(self, run_id: str, package_id: str, rule_ids: list[str]) -> None:
-        self.connection.execute(
-            "INSERT OR REPLACE INTO graph_commits(run_id,context_package_id,rule_ids_json) VALUES(?,?,?)",
-            (run_id, package_id, json.dumps(rule_ids, ensure_ascii=False)),
-        )
         self.connection.commit()
 
     def record_model_call(
@@ -143,19 +144,13 @@ class StateStore:
               latency_seconds, input_text_chars, image_count, output_chars, error_type))
         self.connection.commit()
 
-    def graph_commit(self, run_id: str, package_id: str) -> list[str] | None:
-        row = self.connection.execute(
-            "SELECT rule_ids_json FROM graph_commits WHERE run_id=? AND context_package_id=?", (run_id, package_id)
-        ).fetchone()
-        return json.loads(row["rule_ids_json"]) if row else None
-
     def iter_results(self, run_id: str) -> Iterator[PackageProcessingResult]:
         for row in self.connection.execute("SELECT * FROM package_states WHERE run_id=? ORDER BY context_package_id", (run_id,)):
             yield PackageProcessingResult(
                 context_package_id=row["context_package_id"], status=row["status"],
                 rule_ids=json.loads(row["rule_ids_json"]), failure_stage=row["failure_stage"],
                 failure_code=row["failure_code"], failure_reason=row["failure_reason"],
-                improvement_notes=json.loads(row["improvement_notes_json"]), input_fingerprint=row["input_fingerprint"], run_id=row["run_id"],
+                input_fingerprint=row["input_fingerprint"], run_id=row["run_id"],
             )
 
     def finish_run(self, run_id: str) -> None:

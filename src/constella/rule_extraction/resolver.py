@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterator
 
 from .models import ResolvedAsset, ResolvedConstraint, ResolvedContextPackage, ResolvedUnit
 
 
-RESOLVER_VERSION = "1"
+RESOLVER_VERSION = "2"
 
 
 class InputResolutionError(ValueError):
@@ -70,10 +69,12 @@ class DocumentGraphIndex:
         raw = self.constraints.get(constraint_id)
         if not isinstance(raw, dict):
             raise InputResolutionError(f"Missing constraint reference: {constraint_id}")
+        source_id = str(raw.get("source_id", ""))
         return ResolvedConstraint(
             id=constraint_id, type=str(raw.get("type", "")), value=raw.get("value"),
-            source_id=str(raw.get("source_id", "")), scope=dict(raw.get("scope") or {}),
-            status=str(raw.get("status", "certain")), attributes=dict(raw.get("attributes") or {}),
+            source_id=source_id, scope=dict(raw.get("scope") or {}),
+            status=str(raw.get("status", "certain")), source_unit=self.unit(source_id),
+            attributes=dict(raw.get("attributes") or {}),
         )
 
     def unresolved(self, ambiguity_id: str) -> dict[str, Any]:
@@ -108,6 +109,21 @@ def iter_packages(path: str | Path) -> Iterator[dict[str, Any]]:
         yield package
 
 
+def is_rule_extraction_package(package: dict[str, Any]) -> bool:
+    """Return whether a shared context package belongs in rule extraction.
+
+    Context Builder also emits article-only candidates for concept discovery.
+    Older context outputs did not carry ``package_type``, so missing types remain
+    eligible for backwards compatibility.
+    """
+    attributes = package.get("attributes") or {}
+    routed = attributes.get("package_role") or {}
+    if routed.get("status") == "ok":
+        return bool(routed.get("is_rule_package"))
+    package_type = str(attributes.get("package_type") or "")
+    return package_type != "article_candidate"
+
+
 def resolve_package(index: DocumentGraphIndex, package: dict[str, Any]) -> ResolvedContextPackage:
     def unique(ids: list[str]) -> list[str]:
         return list(dict.fromkeys(ids))
@@ -135,7 +151,3 @@ def resolve_package(index: DocumentGraphIndex, package: dict[str, Any]) -> Resol
         unresolved=unresolved, section_path=list((package.get("attributes") or {}).get("section_path") or []),
         source_package=package, source_fingerprint=source_fingerprint, resolver_version=RESOLVER_VERSION,
     )
-
-
-def package_as_dict(package: ResolvedContextPackage) -> dict[str, Any]:
-    return asdict(package)

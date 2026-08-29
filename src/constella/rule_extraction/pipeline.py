@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,11 +20,10 @@ from .generator import RuleGenerator, load_prompt
 from .graph_writer import Neo4jRuleGraphWriter
 from .io import export_outputs, write_ruleset
 from .parser import RuleParseError, parse_final_expression
-from .prompt_router import RoutedPromptRegistry
-from .reflection_patch import apply_reflection_patch
-from .resolver import DocumentGraphIndex, InputResolutionError, iter_packages, resolve_package
+from .prompt_router import RoutedPromptRegistry, route_modalities, route_name
+from .resolver import DocumentGraphIndex, is_rule_extraction_package, iter_packages, resolve_package
 from .models import PackageProcessingResult
-from .state_store import StateStore, TERMINAL_STATES
+from .state_store import StateStore
 
 
 @dataclass(slots=True)
@@ -181,6 +181,17 @@ def _load_model_output(
         return None
 
 
+def _resolve_with_cache(
+    index: DocumentGraphIndex, cache: ContextCache, package: dict[str, Any],
+):
+    candidate = resolve_package(index, package)
+    resolved = cache.load(package["id"], candidate.source_fingerprint)
+    if resolved is not None:
+        return resolved
+    cache.write(candidate)
+    return candidate
+
+
 def run_rule_extraction(
     context_output_dir: str | Path, runtime: RuleExtractionRuntime, *, package_ids: set[str] | None = None,
     limit: int | None = None, resume: bool = False, retry_failed: bool = False, reset_graph: bool = False,
@@ -194,7 +205,10 @@ def run_rule_extraction(
         raise FileNotFoundError("Context Builder output requires document_graph.json and context_packages.jsonl")
     runtime.output_dir.mkdir(parents=True, exist_ok=True)
     fingerprint = _input_fingerprint(graph_path, packages_path)
-    all_packages = list(iter_packages(packages_path))
+    all_packages = [
+        package for package in iter_packages(packages_path)
+        if is_rule_extraction_package(package)
+    ]
     packages = all_packages
     if package_ids:
         packages = [item for item in packages if item["id"] in package_ids]
@@ -202,6 +216,24 @@ def run_rule_extraction(
         packages = packages[:limit]
     index = DocumentGraphIndex.load(graph_path, runtime.asset_root)
     cache = ContextCache(runtime.output_dir / "cache" / "contexts")
+    if runtime.dry_run_resolve:
+        failures: list[dict[str, str]] = []
+        for package in packages:
+            try:
+                _resolve_with_cache(index, cache, package)
+            except Exception as error:
+                failures.append({"context_package_id": package["id"], "reason": str(error)})
+        report = {
+            "run_id": "dry_run_resolve", "input_fingerprint": fingerprint,
+            "selected_package_count": len(packages), "resolved_count": len(packages) - len(failures),
+            "success_count": len(packages) - len(failures), "no_rule_count": 0,
+            "failed_count": len(failures), "failures": failures,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+        (runtime.output_dir / "rule_extraction_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        return report
     state = StateStore(runtime.output_dir / "rule_extraction_state.sqlite3")
 
     config = _load_yaml(runtime.config_dir / "models.yaml")
@@ -247,10 +279,10 @@ def run_rule_extraction(
     neo4j_config = _load_yaml(runtime.config_dir / "neo4j.yaml").get("neo4j", {})
     password_env = neo4j_config.get("password_env", "CONSTELLA_NEO4J_PASSWORD")
     password = os.environ.get(password_env)
-    if not runtime.dry_run_resolve and not runtime.no_graph and not password:
+    if not runtime.no_graph and not password:
         raise ValueError(f"Neo4j password is required in environment variable {password_env}")
     writer = None
-    if not runtime.dry_run_resolve and not runtime.no_graph:
+    if not runtime.no_graph:
         writer = Neo4jRuleGraphWriter(
             str(neo4j_config.get("uri", "bolt://127.0.0.1:7200")), str(neo4j_config.get("username", "neo4j")),
             password or "", str(neo4j_config.get("database", "neo4j")),
@@ -266,8 +298,10 @@ def run_rule_extraction(
             state.close()
             raise
     state_path = runtime.output_dir / "rule_extraction_state.sqlite3"
+    if resume:
+        state.mark_run_running(run_id)
 
-    def process_package(package: dict[str, Any]) -> None:
+    def process_package(package: dict[str, Any], existing: dict[str, Any] | None) -> None:
         """Process one package with its own SQLite connection.
 
         Neo4j's driver is thread-safe and each write has its own transaction.
@@ -277,20 +311,10 @@ def run_rule_extraction(
         worker_state = StateStore(state_path)
         phase = "resolve"
         try:
-            existing = worker_state.package_state(run_id, package["id"])
-            if existing and existing["status"] in {"success", "no_rule"}:
-                return
-            if existing and existing["status"] == "failed" and not retry_failed:
-                return
             try:
-                resolved_candidate = resolve_package(index, package)
-                resolved = cache.load(package["id"], resolved_candidate.source_fingerprint) or resolved_candidate
-                if resolved is resolved_candidate:
-                    cache.write(resolved)
+                resolved = _resolve_with_cache(index, cache, package)
             except Exception as error:
                 worker_state.set_result(_failure(package["id"], run_id, fingerprint, "resolve", "input_resolution_failed", error))
-                return
-            if runtime.dry_run_resolve:
                 return
             if writer is not None and existing and existing["status"] == "writing_graph":
                 recovered_ids = writer.package_rule_ids(package["id"], run_id)
@@ -321,33 +345,26 @@ def run_rule_extraction(
                     runtime.output_dir, package["id"], "generate", fingerprint, active_generator_prompt,
                 )
                 reflection = _load_model_output(runtime.output_dir, package["id"], "reflect", fingerprint, reflector_prompt)
-                if reflection is None:
-                    if draft is None:
-                        draft = generator.generate_draft_from_context(
-                            context, package["id"], prompt=active_generator_prompt,
-                        )
-                    phase = "reflecting"
-                    worker_state.set_processing(run_id, package["id"], fingerprint, phase)
-                    reflection = generator.reflect_from_context(context, package["id"], draft)
-                elif draft is None:
+                if draft is None:
                     # A reflection cache without its exact-version generation draft cannot
                     # be applied safely. Rebuild both stages as one pair.
                     draft = generator.generate_draft_from_context(
                         context, package["id"], prompt=active_generator_prompt,
                     )
+                    reflection = None
+                if reflection is None:
                     phase = "reflecting"
                     worker_state.set_processing(run_id, package["id"], fingerprint, phase)
-                    reflection = generator.reflect_from_context(context, package["id"], draft)
+                    reflection, final = generator.reflect_from_context(context, package["id"], draft)
                 else:
                     # Cached responses are still validated against their exact
                     # draft; malformed patches are sent back to the reflector
                     # instead of being loosened or sanitized by the parser.
-                    reflection = generator.ensure_valid_reflection(
+                    reflection, final = generator.ensure_valid_reflection(
                         context, package["id"], draft, reflection,
                     )
                 phase = "applying_reflection"
                 worker_state.set_processing(run_id, package["id"], fingerprint, phase)
-                final = apply_reflection_patch(draft, reflection)
                 _store_model_output(
                     runtime.output_dir, package["id"], "candidate", fingerprint, final,
                     reflector_prompt["id"], str(reflector_prompt["version"]),
@@ -362,8 +379,7 @@ def run_rule_extraction(
                 )
                 if not ruleset.rules:
                     worker_state.set_result(PackageProcessingResult(
-                        package["id"], "no_rule", improvement_notes=ruleset.improvement_notes,
-                        input_fingerprint=fingerprint, run_id=run_id,
+                        package["id"], "no_rule", input_fingerprint=fingerprint, run_id=run_id,
                     ))
                     return
                 phase = "writing_graph" if writer is not None else "persisting"
@@ -375,9 +391,8 @@ def run_rule_extraction(
                     written_ids = writer.package_rule_ids(package["id"], run_id)
                     if written_ids != sorted(expected_ids):
                         raise RuntimeError("Neo4j committed rule IDs do not match the parsed rule set")
-                    worker_state.record_graph_commit(run_id, package["id"], expected_ids)
                 worker_state.set_result(PackageProcessingResult(
-                    package["id"], "success", rule_ids=expected_ids, improvement_notes=ruleset.improvement_notes,
+                    package["id"], "success", rule_ids=expected_ids,
                     input_fingerprint=fingerprint, run_id=run_id,
                 ))
             except RuleParseError as error:
@@ -390,26 +405,27 @@ def run_rule_extraction(
             worker_state.close()
 
     try:
-        candidates = []
+        candidates: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
         for package in packages:
-            existing = state.package_state(run_id, package["id"])
+            row = state.package_state(run_id, package["id"])
+            existing = dict(row) if row else None
             if existing and existing["status"] in {"success", "no_rule"}:
                 continue
             if existing and existing["status"] == "failed" and not retry_failed:
                 continue
-            candidates.append(package)
-        candidate_ids = [package["id"] for package in candidates]
+            candidates.append((package, existing))
+        candidate_ids = [package["id"] for package, _ in candidates]
         state.queue_packages(run_id, candidate_ids, fingerprint)
         progress = _TerminalProgress(state_path, run_id, set(candidate_ids)) if runtime.show_progress else None
         if progress:
             progress.start()
         try:
             if runtime.workers == 1:
-                for package in candidates:
-                    process_package(package)
+                for package, existing in candidates:
+                    process_package(package, existing)
             else:
                 with ThreadPoolExecutor(max_workers=runtime.workers, thread_name_prefix="rule-extract") as executor:
-                    futures = [executor.submit(process_package, package) for package in candidates]
+                    futures = [executor.submit(process_package, package, existing) for package, existing in candidates]
                     for future in as_completed(futures):
                         future.result()
         finally:
@@ -418,20 +434,28 @@ def run_rule_extraction(
         if writer:
             writer.finish_run(run_id)
         state.finish_run(run_id)
-        results = list(state.iter_results(run_id))
+        eligible_package_ids = {package["id"] for package in all_packages}
+        # A run created by an older build may still contain states for shared
+        # article-only candidates. Keep those historical rows in SQLite, but do
+        # not let them leak into current reports or exports.
+        results = [
+            result for result in state.iter_results(run_id)
+            if result.context_package_id in eligible_package_ids
+        ]
         counts = {status: sum(item.status == status for item in results) for status in ("success", "no_rule", "failed")}
-        export_packages = [package for package in all_packages if package["id"] in {item.context_package_id for item in results}]
+        result_ids = {item.context_package_id for item in results}
+        export_packages = [package for package in all_packages if package["id"] in result_ids]
+        route_counts: Counter[str] = Counter()
+        for package in export_packages:
+            resolved = _resolve_with_cache(index, cache, package)
+            route_counts[route_name(route_modalities(resolved))] += 1
         report = {
             "run_id": run_id, "input_fingerprint": fingerprint, "package_count": len(results), "selected_package_count": len(packages), **{f"{key}_count": value for key, value in counts.items()},
             "rule_count": sum(len(item.rule_ids) for item in results if item.status == "success"),
-            "elapsed_seconds": round(time.monotonic() - started, 3), "model": model,
-            "prompt_versions": {
-                "generator": routed_prompts.descriptor(),
-                "reflector": reflector_prompt["version"],
-                "reflection_repair": repair_prompt["version"],
-            },
+            "elapsed_seconds": round(state.run_elapsed_seconds(run_id), 3), "model": model,
+            "prompt_versions": active_prompt_versions,
             "extraction_mode": "structure_routed",
-            "route_counts": dict(sorted(routed_prompts.route_counts.items())),
+            "route_counts": dict(sorted(route_counts.items())),
         }
         export_outputs(runtime.output_dir, export_packages, results, report)
         return report

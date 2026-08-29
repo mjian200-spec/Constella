@@ -25,14 +25,20 @@ def route_modalities(package: ResolvedContextPackage) -> tuple[str, ...]:
     matching prompt modules are composed; routing never chooses a winner and
     silently discards another evidence form.
     """
-    unit_types = {
-        unit.type.lower()
+    unit_types = [
+        unit.type
         for unit in (*package.core_units, *package.support_units)
         if unit.type
-    }
-    unit_types.update(asset.unit.type.lower() for asset in package.assets if asset.unit.type)
+    ]
+    unit_types.extend(asset.unit.type for asset in package.assets if asset.unit.type)
+    return route_modalities_for_types(unit_types)
+
+
+def route_modalities_for_types(unit_types: Iterable[str]) -> tuple[str, ...]:
+    """Route from normalized document-unit types without resolving a package."""
+    normalized_types = {str(unit_type).lower() for unit_type in unit_types if unit_type}
     specialists = tuple(name for name in SPECIALIST_ORDER if any(
-        ASSET_TYPE_TO_MODALITY.get(unit_type) == name for unit_type in unit_types
+        ASSET_TYPE_TO_MODALITY.get(unit_type) == name for unit_type in normalized_types
     ))
     # Every context package is anchored by core/support text.  Specialist
     # evidence augments that anchor; it must never replace text extraction.

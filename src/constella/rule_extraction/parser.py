@@ -19,6 +19,11 @@ _ARROW = re.compile(
     r"\s*(?:(?:—|－|-)\s*(?:\[\s*(.*?)\s*\](?=\s*(?:→|->|⇒|⟶))|([^\s→]+))\s*)?(?:→|->|⇒|⟶)\s*"
 )
 _NO_RULE = re.compile(r"(?:^|\s)(?:no[_ -]?rule|无规则|没有(?:可抽取)?规则)(?:\s|$)", re.I)
+_BARE_NUMERIC_VALUE = re.compile(r"^(?:约|近似|≈)?\s*[<>≤≥]?\s*[+-]?\d")
+_BARE_DEGREE_VALUES = {
+    "大", "小", "高", "低", "较大", "较小", "较高", "较低",
+    "很大", "很小", "很高", "很低",
+}
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
@@ -66,12 +71,21 @@ def _state_expressions(raw: str) -> list[StateExpression]:
             if hit:
                 obj, state = "气孔", hit.group(1)
             else:
+                bare_value = item.strip(" \t。；;")
+                # A number/range/unit or a bare degree is not an object.  Keep
+                # the general DSL fallback for source phrases, but require
+                # attribute values to name their dimension explicitly, e.g.
+                # ``熔化系数|15~26g/(A·h)`` or ``熔深|大``.
+                if _BARE_NUMERIC_VALUE.match(bare_value) or bare_value in _BARE_DEGREE_VALUES:
+                    raise RuleParseError(
+                        f"Bare numeric or degree value must use object|state notation: {item}"
+                    )
                 # DSL is intentionally permissive in the first release.  A
                 # multimodal model often emits a compact source phrase such as
                 # “弧光辐射强烈” or “必须采取防风措施”.  Preserve it losslessly
                 # instead of rejecting an otherwise parseable rule merely because
                 # it does not choose the optional object|state notation.
-                obj, state = item.strip(" \t。；;"), "提及"
+                obj, state = bare_value, "提及"
         if not obj or not state:
             raise RuleParseError(f"State expression has an empty object or state: {item}")
         normalized = normalize_state_text(state)
@@ -120,11 +134,7 @@ def parse_final_expression(expression: str, package_id: str, *, prompt_id: str, 
     if not cleaned:
         raise RuleParseError("Model returned an empty final expression")
     if _NO_RULE.search(cleaned) and not re.search(r"^\s*R\s*[:：]", cleaned, re.M | re.I):
-        return StructuredRuleSet(package_id, [], _improvement_notes(cleaned), expression, prompt_id, prompt_version, model)
-
-    # Narrative follow-up sections can themselves quote C:/R: examples. They are
-    # deliberately not formal rules and must not be consumed by the DSL parser.
-    parseable = re.split(r"(?im)^\s*(?:#+\s*)?(?:后续改进|improvements?)\s*(?:[:：]\s*)?$", cleaned, maxsplit=1)[0]
+        return StructuredRuleSet(package_id, [], expression, prompt_id, prompt_version, model)
 
     groups: list[tuple[str, list[tuple[str, list[StateExpression]]]]] = []
     group_id = "group_1"
@@ -160,7 +170,7 @@ def parse_final_expression(expression: str, package_id: str, *, prompt_id: str, 
             groups.append((group_id, rules))
         conditions, rules = [], []
 
-    for line in parseable.splitlines():
+    for line in cleaned.splitlines():
         if re.fullmatch(r"\s*-{2,}\s*", line):
             continue
         if re.match(r"^\s*(?:依据|证据)\s*[:：]", line):
@@ -184,11 +194,4 @@ def parse_final_expression(expression: str, package_id: str, *, prompt_id: str, 
     for group, items in groups:
         for item, constraints in items:
             result.append(_parse_rule(item, package_id, group, len(result) + 1, constraints))
-    return StructuredRuleSet(package_id, result, _improvement_notes(cleaned), expression, prompt_id, prompt_version, model)
-
-
-def _improvement_notes(text: str) -> list[str]:
-    match = re.search(r"(?:后续改进|improvement(?:s)?)\s*(?:[:：]\s*|\n)(.+)", text, re.I | re.S)
-    if not match:
-        return []
-    return [line.strip(" -•\t") for line in match.group(1).splitlines() if line.strip(" -•\t")]
+    return StructuredRuleSet(package_id, result, expression, prompt_id, prompt_version, model)

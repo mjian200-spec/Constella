@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from constella.rule_extraction.prompt_router import RoutedPromptRegistry, route_modalities
+from constella.rule_extraction.prompt_router import (
+    RoutedPromptRegistry, route_modalities, route_modalities_for_types,
+)
 from constella.rule_extraction.resolver import DocumentGraphIndex, iter_packages, resolve_package
 
 
@@ -29,6 +31,13 @@ class PromptRouterTests(unittest.TestCase):
         self.assertEqual(("text", "table"), route_modalities(self.resolved("context_000801")))
         self.assertEqual(("text", "formula"), route_modalities(self.resolved("context_000540")))
 
+    def test_summary_route_uses_the_same_unit_type_contract(self) -> None:
+        self.assertEqual(("text",), route_modalities_for_types(["passage", "title"]))
+        self.assertEqual(
+            ("text", "image", "table", "formula"),
+            route_modalities_for_types(["passage", "figure", "table", "formula"]),
+        )
+
     def test_composes_every_specialist_for_real_mixed_package(self) -> None:
         registry = RoutedPromptRegistry(PROMPTS)
         prompt, route = registry.prompt_for(self.resolved("context_000037"))
@@ -36,7 +45,7 @@ class PromptRouterTests(unittest.TestCase):
         self.assertEqual("rule_generator_routed__text__table__formula", prompt["id"])
         self.assertIn("【表格专项】", prompt["system"])
         self.assertIn("【公式专项】", prompt["system"])
-        self.assertNotIn("【图片专项】", prompt["system"])
+        self.assertNotIn("【图像文字化专项】", prompt["system"])
         self.assertIn("【纯文本专项】", prompt["system"])
 
     def test_route_prompts_encode_the_key_semantic_guards(self) -> None:
@@ -44,7 +53,7 @@ class PromptRouterTests(unittest.TestCase):
         image, _ = registry.prompt_for(self.resolved("context_000391"))
         table, _ = registry.prompt_for(self.resolved("context_000801"))
         formula, _ = registry.prompt_for(self.resolved("context_000540"))
-        self.assertIn("数值描述哪个属性", image["system"])
+        self.assertIn("资源文字化已明确数值归属", image["system"])
         self.assertIn("表题→分组表头→行头→列头", table["system"])
         self.assertIn("普通公式的完整公式必须放在箭头方括号中", formula["system"])
         self.assertIn("资源出现在包中只表示可供核对", formula["system"])
