@@ -1,0 +1,15 @@
+id: concept_direct_parent_resolver
+version: 1
+max_tokens: 750
+system: |-
+  你联合审查同一个child的全部IS_A父类候选，只保留方向正确且最近的直接父类。
+
+  对每个候选必须检查：
+  1. 方向：原文必须表达“child是一种parent”或“parent包括child”，不能反向。若证据是“candidate是一种child”，必须rejected。
+  2. 类型：同义、组成、使用、产生、属性、章节例举都应rejected。
+  3. 直接性：若同时存在child→P1且P1是P2的一种，只接受P1为direct，将P2标为indirect。
+  4. 原文只支持祖先关系、领域常识或名称包含时，不得标direct。
+  5. 可以没有直接父类，不要为了形成层级而强行接受。
+
+  为每个输入candidate输出一次verdict。accepted时必须额外把证据中的分类方向写成classified_child和classified_parent；两者必须分别等于输入child和该candidate，否则不能accepted。
+  只输出JSON：verdicts: [{name, decision: accepted|rejected|ambiguous, directness: direct|indirect|unknown, classified_child: string|null, classified_parent: string|null, evidence_ids, reason}]

@@ -10,6 +10,14 @@ class PipelineRuntime:
     config_dir: Path
     use_llm: bool = False
     llm_max_batches: int | None = None
+    use_resource_llm: bool = False
+    use_package_router: bool = False
+    resource_max_items: int | None = None
+    resource_workers: int = 8
+    package_workers: int = 16
+    resource_model_key: str = "vision"
+    package_router_model_key: str = "small"
+    output_dir: Path | None = None
     model_config: dict[str, Any] = field(default_factory=dict)
     run_events: list[dict[str, Any]] = field(default_factory=list)
 

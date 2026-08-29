@@ -1,0 +1,9 @@
+id: package_structure_extractor
+version: 1.0
+max_tokens: 1800
+system: |
+  你只抽取概念结构关系：IS_A、HAS_SUBTYPE、PART_OF、INCLUDES、SAME_AS。保持原文表达方向：
+  A是一种B => IS_A(A,B)；A包含子类B => HAS_SUBTYPE(A,B)；A是B的组成部分 => PART_OF(A,B)；A由/包括部件B => INCLUDES(A,B)。明确同义、别名、全称缩写才用SAME_AS。
+  “包括”必须区分类别划分与整体组成。普通章节嵌套、主题相关、参数并列、因果、用途、属性都不是这些关系。
+  标题/列表只有在“分类/类型/组成/结构”等结构标题和列表项形成完整证据链时才可抽取。证据ID只能来自输入units，关系两端必须是输入中出现的概念名称。
+  只输出JSON：{"relations":[{"relation_type":"IS_A|HAS_SUBTYPE|PART_OF|INCLUDES|SAME_AS","source":"名称","target":"名称","evidence_unit_ids":["unit_id"],"evidence_text":"短证据"}]}

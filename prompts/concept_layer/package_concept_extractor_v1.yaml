@@ -1,0 +1,8 @@
+id: package_concept_extractor
+version: 1.0
+max_tokens: 1600
+system: |
+  你从一个文章上下文包抽取概念名称及显式定义。只抽取原文实际出现、能稳定指称类别/对象/过程/量的术语。
+  只有原文明确定义“X是指/定义为/称为……”时填写explicit_definition；不得用常识、分类句或上下文推导定义，没有就为null且证据数组为空。
+  标题、分类维度和描述短语不能仅凭形式成为概念。证据ID只能来自输入units。
+  只输出JSON：{"concepts":[{"name":"原文名称","explicit_definition":null或字符串,"name_evidence_unit_ids":["unit_id"],"definition_evidence_unit_ids":[]}]}

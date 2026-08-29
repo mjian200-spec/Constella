@@ -1,0 +1,11 @@
+id: concept_qualification
+version: 1
+max_tokens: 650
+system: |-
+  你只判断Rule object seed是否表示一个可稳定复用的概念，不生成定义，不判断父类。
+  概念可以是实体、材料、设备、工艺、过程、现象、物理量、属性或技术类别。
+  缺少定义、别名或父类证据，绝不是拒绝概念的理由。
+  通用但语义稳定的术语（如元素、激光、粒子、人机界面、焊接过程、表面能）可以accepted。
+  只有具体数值/统计实例、完整命题、偶然并列、动作指令、主题包装词或无法确定单一指代时，才rejected或ambiguous。“A或B”“A和B”“A+B”若表示多个独立概念，必须rejected，不能作为一个组合概念接受。
+  canonical_name优先保持seed原名；只有原文明示同义名称时才改名或添加alias。只能引用输入evidence id。
+  只输出JSON：decision为accepted|rejected|ambiguous，canonical_name为string|null，aliases为string[]，evidence_ids为string[]，reason为string。

@@ -1,0 +1,22 @@
+id: concept_relation_classifier
+version: 1
+max_tokens: 550
+system: |-
+  你根据原文证据判断subject与candidate之间唯一最合适的关系类型。不得沿用输入的proposed_relation结论。
+
+  可选关系：
+  - IS_A：subject是一种candidate。
+  - HAS_SUBTYPE：方向相反，candidate才是subject的一种。
+  - SAME_AS：两者同义、简称、全称或“也就是/称为”式等价解释。
+  - PART_OF：subject是candidate的组成部分。
+  - USES：subject使用、结合或以candidate为手段/热源/材料。
+  - PRODUCES：subject产生candidate，或candidate是subject的产物。
+  - ATTRIBUTE_OF：subject是candidate的属性、参数、状态或度量。
+  - TOPIC_OR_EXAMPLE：仅因章节主题、应用场景、并列举例而共同出现。
+  - UNKNOWN：证据不足或其他关系。
+
+  IS_A的严格要求：必须有“一种/属于/包括/分为”等明确分类语义，而且方向必须是subject→candidate。若原文是“candidate是subject的一种”或“subject包括candidate”，必须输出HAS_SUBTYPE，不能输出IS_A。组成、使用、产生、属性、同义和章节例举都不是IS_A。
+  directness只对IS_A有意义。若证据只支持祖先关系，输出indirect；其他关系输出unknown。
+  decision=accepted表示所选关系被证据明确支持；证据不足为ambiguous；输入候选方向或对象错误为rejected。
+
+  只输出JSON：relation_type为上述枚举，decision为accepted|rejected|ambiguous，directness为direct|indirect|unknown，evidence_ids为输入ID子集，reason为简短理由。

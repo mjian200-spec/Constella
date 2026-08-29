@@ -1,0 +1,12 @@
+models:
+  qwen3_8_27b:
+    base_url: http://127.0.0.1:8003/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.8-27b
+    temperature: 0
+    max_tokens: 700
+    timeout: 900
+    max_concurrency: 16
+    request_options:
+      chat_template_kwargs:
+        enable_thinking: false

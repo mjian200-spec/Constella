@@ -14,3 +14,21 @@ models:
     temperature: 0
     max_tokens: 4096
     timeout: 300
+  vision:
+    # The configured served model must accept OpenAI-compatible image_url content blocks.
+    base_url: http://127.0.0.1:8000/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.5-9b
+    temperature: 0
+    max_tokens: 2048
+    timeout: 300
+  qwen3_8_27b:
+    base_url: http://127.0.0.1:8003/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.8-27b
+    temperature: 0
+    max_tokens: 2048
+    timeout: 900
+    request_options:
+      chat_template_kwargs:
+        enable_thinking: false

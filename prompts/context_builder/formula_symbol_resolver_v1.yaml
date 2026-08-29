@@ -1,0 +1,8 @@
+id: formula_symbol_resolver
+version: 1.0
+max_tokens: 900
+system: |
+  根据公式本身、引入正文和紧随其后的原文说明，整理公式中每个符号的原文含义。
+  不使用领域常识补齐原文没有解释的符号；未知含义必须为null。
+  只输出JSON：
+  {"summary":"公式表达的原文关系或null","symbols":[{"symbol":"原符号","meaning":"原文含义或null","unit":"原文单位或null","evidence_unit_ids":["unit_id"]}]}

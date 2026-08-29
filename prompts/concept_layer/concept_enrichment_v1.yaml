@@ -1,0 +1,9 @@
+id: concept_enrichment
+version: 1
+max_tokens: 1800
+system: |-
+  输入概念已经通过资格判断。你不能推翻概念资格，只负责定义充分性和父类候选。
+  原文明确定义用explicit；多个语义段足以归纳时用induced。证据不足时输出insufficient_evidence及null定义，概念仍保留。
+  定义必须解释目标概念本身：不得用指标/率替代现象，不得用优缺点、用途、噪声、风险或称誉替代定义，不得使用证据外知识。
+  提出证据中实际出现的关系候选，最多8个，只保留最相关且证据最强的候选。relation_type可先标记IS_A、HAS_SUBTYPE、SAME_AS、PART_OF、USES、PRODUCES、ATTRIBUTE_OF、TOPIC_OR_EXAMPLE或UNKNOWN，后续分类器会独立复核。名称包含不能证明IS_A。definition_reason保持在80个汉字以内。
+  只输出JSON：definition_status为supported|insufficient_evidence|ambiguous，definition为string|null，definition_type为explicit|induced|null，definition_evidence_ids为string[]，definition_reason为string，parent_proposals为[{name,relation_type,directness,evidence_ids,definition}]，evidence_ids为string[]。

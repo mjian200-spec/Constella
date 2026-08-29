@@ -1,0 +1,8 @@
+# Project-wide default for Concept Layer validation.
+real_rule_count: 100
+use_llm: true
+model_key: qwen3_8_27b
+max_workers: 16
+context_output_dir: outputs/context_builder_full_20260826
+rule_output_dir: outputs/rule_extraction_full_routed_20260826
+output_dir: outputs/concept_layer_real100
