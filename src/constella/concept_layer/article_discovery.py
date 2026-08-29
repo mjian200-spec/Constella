@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -26,14 +27,13 @@ class ArticleDiscoveryRuntime:
 
 
 class PackageConceptProcessor:
-    """Role classification plus three independent, evidence-bound concept calls."""
+    """Extract concepts only from Context Builder's already-routed semantic packages."""
 
     def __init__(self, runtime: ArticleDiscoveryRuntime, client=None) -> None:
         self.runtime = runtime
         self.client = client or LLMClient(runtime.models)
         self.prompts = {
             name: self._load(runtime.prompt_dir / filename) for name, filename in {
-                "role": "package_role_classifier_v1.yaml",
                 "concepts": "package_concept_extractor_v1.yaml",
                 "relations": "package_structure_extractor_v1.yaml",
                 "audit": "package_concept_auditor_v1.yaml",
@@ -47,35 +47,26 @@ class PackageConceptProcessor:
             raise ValueError(f"Invalid prompt: {path}")
         return value
 
-    def process(self, package: dict[str, Any], units: dict[str, Any]) -> dict[str, Any]:
-        payload = _package_payload(package, units)
+    def process(self, package: dict[str, Any], graph: dict[str, Any]) -> dict[str, Any]:
         routed = package.get("attributes", {}).get("package_role", {})
-        if routed.get("status") == "ok":
-            roles = {
-                "is_rule_package": bool(routed.get("is_rule_package")),
-                "is_concept_package": bool(routed.get("is_concept_package")),
-                "is_useless": bool(routed.get("is_useless")),
-                "status": "reused_context_builder_route",
-                "prompt_id": routed.get("prompt_id"),
-                "prompt_version": routed.get("prompt_version"),
-            }
-            package.setdefault("attributes", {})["roles"] = roles
-            if not roles["is_concept_package"]:
-                return package
-            if not self.runtime.use_llm:
-                return package
-        elif not self.runtime.use_llm:
+        if routed.get("status") != "ok":
             package.setdefault("attributes", {})["roles"] = {
                 "is_rule_package": False, "is_concept_package": False,
-                "is_useless": True, "status": "model_not_run",
+                "is_useless": False, "status": "missing_context_builder_route",
             }
             return package
-        else:
-            roles = self._call("role", payload, self._validate_roles)
-            roles["is_useless"] = not roles["is_rule_package"] and not roles["is_concept_package"]
-            package.setdefault("attributes", {})["roles"] = roles
-            if not roles["is_concept_package"]:
-                return package
+        roles = {
+            "is_rule_package": bool(routed.get("is_rule_package")),
+            "is_concept_package": bool(routed.get("is_concept_package")),
+            "is_useless": bool(routed.get("is_useless")),
+            "status": "reused_context_builder_route",
+            "prompt_id": routed.get("prompt_id"),
+            "prompt_version": routed.get("prompt_version"),
+        }
+        package.setdefault("attributes", {})["roles"] = roles
+        if not roles["is_concept_package"] or not self.runtime.use_llm:
+            return package
+        payload = _package_payload(package, graph)
         concepts = self._call("concepts", payload, lambda value: self._validate_concepts(value, payload))
         relation_payload = {**payload, "extracted_concepts": concepts["concepts"]}
         relations = self._call("relations", relation_payload, lambda value: self._validate_relations(value, payload))
@@ -93,7 +84,7 @@ class PackageConceptProcessor:
                 response = self.client.complete(
                     self.runtime.model_key, messages, response_format={"type": "json_object"},
                     prompt_id=prompt["id"], prompt_version=str(prompt["version"]),
-                    input_unit_ids=[unit["unit_id"] for unit in payload["units"]], max_tokens=int(prompt.get("max_tokens", 1600)),
+                    input_unit_ids=payload["evidence_unit_ids"], max_tokens=int(prompt.get("max_tokens", 1600)),
                 )
                 value = json.loads(response["choices"][0]["message"]["content"])
                 validator(value)
@@ -107,13 +98,8 @@ class PackageConceptProcessor:
         raise ValueError(f"{prompt['id']} failed validation: {' | '.join(errors)}")
 
     @staticmethod
-    def _validate_roles(value: dict) -> None:
-        if not isinstance(value.get("is_rule_package"), bool) or not isinstance(value.get("is_concept_package"), bool):
-            raise ValueError("package roles must be booleans")
-
-    @staticmethod
     def _validate_concepts(value: dict, payload: dict) -> None:
-        allowed = {unit["unit_id"] for unit in payload["units"]}
+        allowed = set(payload["evidence_unit_ids"])
         if not isinstance(value.get("concepts"), list):
             raise ValueError("concepts must be a list")
         for concept in value["concepts"]:
@@ -126,7 +112,7 @@ class PackageConceptProcessor:
 
     @staticmethod
     def _validate_relations(value: dict, payload: dict) -> None:
-        allowed = {unit["unit_id"] for unit in payload["units"]}
+        allowed = set(payload["evidence_unit_ids"])
         if not isinstance(value.get("relations"), list):
             raise ValueError("relations must be a list")
         for relation in value["relations"]:
@@ -155,14 +141,32 @@ def run_article_concept_discovery(
     context_output_dir: str | Path, output_dir: str | Path, runtime: ArticleDiscoveryRuntime, *, limit: int | None = None, client=None,
 ) -> dict[str, int]:
     source = Path(context_output_dir)
+    target = Path(output_dir)
     graph = json.loads((source / "document_graph.json").read_text(encoding="utf-8"))
     packages = [json.loads(line) for line in (source / "context_packages.jsonl").read_text(encoding="utf-8").splitlines() if line]
     if limit is not None:
         packages = packages[:limit]
     processor = PackageConceptProcessor(runtime, client)
     processed: list[dict[str, Any] | None] = [None] * len(packages)
+    target.mkdir(parents=True, exist_ok=True)
+    package_results_dir = target / "packages"
+    package_results_dir.mkdir(exist_ok=True)
+    existing = {}
+    for path in package_results_dir.glob("*.json"):
+        try:
+            result = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if result.get("attributes", {}).get("concept_discovery", {}).get("status") != "failed":
+            existing[path.stem] = result
+    pending: list[int] = []
+    for index, package in enumerate(packages):
+        if package["id"] in existing:
+            processed[index] = existing[package["id"]]
+        else:
+            pending.append(index)
     with ThreadPoolExecutor(max_workers=runtime.max_workers) as pool:
-        futures = {pool.submit(processor.process, package, graph["units"]): index for index, package in enumerate(packages)}
+        futures = {pool.submit(processor.process, packages[index], graph): index for index in pending}
         for future in as_completed(futures):
             index = futures[future]
             try:
@@ -175,9 +179,9 @@ def run_article_concept_discovery(
                     "reason": str(error),
                 }
                 processed[index] = failed
+            _write_package_result(package_results_dir, processed[index])
     rows = [row for row in processed if row is not None]
     concepts, relations = _assemble(rows)
-    target = Path(output_dir)
     write_jsonl(target / "context_packages.jsonl", rows)
     write_jsonl(target / "concepts.jsonl", concepts)
     write_jsonl(target / "concept_relations.jsonl", relations)
@@ -193,14 +197,75 @@ def run_article_concept_discovery(
     }
 
 
-def _package_payload(package: dict[str, Any], units: dict[str, Any]) -> dict[str, Any]:
-    ids = list(dict.fromkeys(package.get("core_unit_ids", []) + package.get("support_unit_ids", []) + package.get("asset_part_ids", [])))
-    return {"package_id": package["id"], "candidate_sources": package.get("attributes", {}).get("candidate_sources", []), "heading_list_structure": package.get("attributes", {}).get("heading_list_structure", {}), "units": [{"unit_id": unit_id, "type": units[unit_id]["type"], "content": units[unit_id].get("content"), "caption": units[unit_id].get("attributes", {}).get("caption"), "table_body": units[unit_id].get("attributes", {}).get("table_body"), "resource_understanding": units[unit_id].get("attributes", {}).get("resource_understanding")} for unit_id in ids if unit_id in units]}
+def _write_package_result(packages_dir: Path, package: dict[str, Any]) -> None:
+    path = packages_dir / f"{package['id']}.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _package_payload(package: dict[str, Any], graph: dict[str, Any]) -> dict[str, Any]:
+    """Pass Context Builder fields through without rebuilding or recalling context."""
+    units = graph.get("units") or {}
+    attributes = package.get("attributes") or {}
+    core_ids = list(dict.fromkeys(package.get("core_unit_ids") or []))
+    support_ids = [item for item in package.get("support_unit_ids") or [] if item not in core_ids]
+    asset_ids = list(dict.fromkeys(package.get("asset_part_ids") or []))
+    covered = set(core_ids) | set(support_ids)
+    resource_ids = [item for item in asset_ids if item not in covered]
+    constraints = graph.get("constraints") or {}
+    constraint_rows = []
+    constraint_source_ids: list[str] = []
+    for constraint_id in package.get("constraint_ids") or []:
+        constraint = constraints.get(constraint_id)
+        if not constraint:
+            continue
+        source_id = str(constraint.get("source_id") or "")
+        if source_id in units:
+            constraint_source_ids.append(source_id)
+        constraint_rows.append({
+            "constraint_id": constraint_id,
+            "type": constraint.get("type"),
+            "value": constraint.get("value"),
+            "scope": constraint.get("scope") or {},
+            "status": constraint.get("status"),
+            "source_unit": _unit_payload(source_id, units) if source_id in units else None,
+        })
+    evidence_unit_ids = list(dict.fromkeys([
+        *core_ids, *support_ids, *asset_ids, *constraint_source_ids,
+    ]))
+    ambiguities = graph.get("ambiguities") or {}
+    return {
+        "package_id": package["id"],
+        "package_role": attributes.get("package_role"),
+        "section_path": attributes.get("section_path") or [],
+        "candidate_sources": attributes.get("candidate_sources") or [],
+        "heading_list_structure": attributes.get("heading_list_structure") or {},
+        "core_units": [_unit_payload(unit_id, units) for unit_id in core_ids if unit_id in units],
+        "support_units": [_unit_payload(unit_id, units) for unit_id in support_ids if unit_id in units],
+        "resources": [_unit_payload(unit_id, units) for unit_id in resource_ids if unit_id in units],
+        "constraints": constraint_rows,
+        "unresolved": [ambiguities[item] for item in package.get("unresolved_ids") or [] if item in ambiguities],
+        "evidence_unit_ids": [item for item in evidence_unit_ids if item in units],
+    }
+
+
+def _unit_payload(unit_id: str, units: dict[str, Any]) -> dict[str, Any]:
+    unit = units[unit_id]
+    attributes = unit.get("attributes") or {}
+    return {
+        "unit_id": unit_id,
+        "type": unit.get("type"),
+        "content": unit.get("content"),
+        "caption": attributes.get("caption"),
+        "table_body": attributes.get("table_body"),
+        "resource_understanding": attributes.get("resource_understanding"),
+    }
 
 
 def _assemble(packages: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
     accepted_concepts: dict[str, dict] = {}
-    raw_relations: list[tuple[str, dict]] = []
+    raw_relations: list[tuple[str, dict, str]] = []
     aliases: list[tuple[str, str]] = []
     for package in packages:
         extraction = package.get("concept_extraction")
@@ -209,9 +274,12 @@ def _assemble(packages: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
         audit = extraction.get("audit", {})
         if audit.get("status") == "rejected":
             continue
+        audit_status = audit.get("status", "accepted")
         for item in audit.get("concepts", []):
             name = _normalize(item["name"])
-            record = accepted_concepts.setdefault(name, {"canonical_name": item["name"], "aliases": [], "definition": None, "definition_type": None, "source_package_ids": [], "evidence_ids": [], "audit_status": "accepted"})
+            record = accepted_concepts.setdefault(name, {"canonical_name": item["name"], "aliases": [], "definition": None, "definition_type": None, "source_package_ids": [], "evidence_ids": [], "audit_status": audit_status})
+            if audit_status == "revised":
+                record["audit_status"] = "revised"
             record["source_package_ids"].append(package["id"])
             record["evidence_ids"].extend(item.get("name_evidence_unit_ids", []))
             if item.get("explicit_definition") and record["definition"] is None:
@@ -221,7 +289,7 @@ def _assemble(packages: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
             if relation["relation_type"] == "SAME_AS":
                 aliases.append((_normalize(relation["source"]), _normalize(relation["target"])))
             else:
-                raw_relations.append((package["id"], relation))
+                raw_relations.append((package["id"], relation, audit_status))
     alias_redirects = _merge_alias_components(accepted_concepts, aliases)
     concepts: list[dict] = []
     name_to_id: dict[str, str] = {}
@@ -238,14 +306,14 @@ def _assemble(packages: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
         if canonical in name_to_id:
             name_to_id[alias] = name_to_id[canonical]
     formal: list[dict] = []
-    for package_id, relation in raw_relations:
+    for package_id, relation, audit_status in raw_relations:
         source, target, kind = relation["source"], relation["target"], relation["relation_type"]
         if kind == "HAS_SUBTYPE": source, target, kind = target, source, "IS_A"
         elif kind == "INCLUDES": source, target, kind = target, source, "PART_OF"
         source_id, target_id = name_to_id.get(_normalize(source)), name_to_id.get(_normalize(target))
         if not source_id or not target_id or source_id == target_id:
             continue
-        formal.append({"relation_id": "relation_" + hashlib.sha1(f"{kind}:{source_id}:{target_id}".encode()).hexdigest()[:12], "child_concept_id": source_id, "type": kind, "parent_concept_id": target_id, "directness": "direct", "evidence_ids": relation["evidence_unit_ids"], "source_package_ids": [package_id], "original_relation": relation, "audit_status": "accepted"})
+        formal.append({"relation_id": "relation_" + hashlib.sha1(f"{kind}:{source_id}:{target_id}".encode()).hexdigest()[:12], "child_concept_id": source_id, "type": kind, "parent_concept_id": target_id, "directness": "direct", "evidence_ids": relation["evidence_unit_ids"], "source_package_ids": [package_id], "original_relation": relation, "audit_status": audit_status})
     unique: dict[tuple[str, str, str], dict] = {}
     for row in formal:
         key = (row["type"], row["child_concept_id"], row["parent_concept_id"])
@@ -257,7 +325,39 @@ def _assemble(packages: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
         existing["evidence_ids"] = list(dict.fromkeys(existing["evidence_ids"] + row["evidence_ids"]))
         existing["source_package_ids"] = list(dict.fromkeys(existing["source_package_ids"] + row["source_package_ids"]))
         existing["original_relations"].append(row["original_relation"])
-    return concepts, list(unique.values())
+        if row["audit_status"] == "revised":
+            existing["audit_status"] = "revised"
+    return concepts, _direct_relations(list(unique.values()))
+
+
+def _direct_relations(relations: list[dict]) -> list[dict]:
+    """Keep an acyclic, transitively reduced IS_A hierarchy from explicit package evidence."""
+    is_a = sorted((row for row in relations if row["type"] == "IS_A"), key=lambda row: row["relation_id"])
+    other = [row for row in relations if row["type"] != "IS_A"]
+    kept: list[dict] = []
+    for row in is_a:
+        if not _reachable(row["parent_concept_id"], row["child_concept_id"], kept):
+            kept.append(row)
+    direct = [
+        row for row in kept
+        if not _reachable(row["child_concept_id"], row["parent_concept_id"], [item for item in kept if item is not row])
+    ]
+    return [*other, *direct]
+
+
+def _reachable(start: str, target: str, relations: list[dict]) -> bool:
+    parents: dict[str, set[str]] = {}
+    for row in relations:
+        parents.setdefault(row["child_concept_id"], set()).add(row["parent_concept_id"])
+    pending, seen = [start], set()
+    while pending:
+        current = pending.pop()
+        if current == target:
+            return True
+        if current not in seen:
+            seen.add(current)
+            pending.extend(parents.get(current, set()) - seen)
+    return False
 
 
 def _merge_alias_components(
