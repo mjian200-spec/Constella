@@ -89,3 +89,19 @@ def test_object_protocol_accepts_candidate_from_another_case_in_same_package():
         results, report = runner.run([package])
     assert results[0]["status"] == "success"
     assert report["protocol_success_rate"] == 1.0
+
+
+def test_concept_review_only_accepts_proposed_pairs():
+    package = {
+        "package_id": "p1", "package_type": "concept_merge_review",
+        "cases": [{"left": {"id": "c1"}, "right": {"id": "c2"}}],
+    }
+    client = FakeClient({"merge_pairs": [["c2", "c1"]]})
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, report = runner.run([package])
+    assert results[0]["status"] == "success"
+    assert report["decision_coverage_rate"] == 1.0

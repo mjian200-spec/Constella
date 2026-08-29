@@ -34,7 +34,9 @@ def assemble_concepts(
     for result in results:
         if result.get("status") != "success":
             continue
-        for group in result["output"].get("merge_groups", []):
+        groups = list(result["output"].get("merge_groups", []))
+        groups.extend(result["output"].get("merge_pairs", []))
+        for group in groups:
             merge_group_count += 1
             for concept_id in group[1:]:
                 union.union(group[0], concept_id)

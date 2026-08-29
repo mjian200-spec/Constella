@@ -55,3 +55,12 @@ def test_state_clustering_keeps_near_equivalent_thresholds_together():
     ]
     chunks = SemanticPackageBuilder._cluster_states(states, 2)
     assert {item["id"] for item in chunks[0]} == {"a", "c"}
+
+
+def test_merge_review_deduplicates_proposed_pairs():
+    builder = SemanticPackageBuilder(_inputs())
+    results = [{"status": "success", "output": {"merge_groups": [["c1", "c2"], ["c2", "c1"]]}}]
+    packages = builder.concept_merge_review_packages(results)
+    assert len(packages) == 1
+    assert len(packages[0]["cases"]) == 1
+    assert {packages[0]["cases"][0][side]["id"] for side in ("left", "right")} == {"c1", "c2"}

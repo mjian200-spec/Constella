@@ -15,6 +15,7 @@ from constella.context_builder.llm_client import LLMClient
 
 PROMPT_FILES = {
     "concept_merge": "concept_merge_v1.yaml",
+    "concept_merge_review": "concept_merge_review_v1.yaml",
     "object_alignment": "object_alignment_v1.yaml",
     "state_normalization": "state_normalization_v1.yaml",
 }
@@ -155,6 +156,8 @@ class SemanticAlignmentRunner:
         package_type = package["package_type"]
         if package_type == "concept_merge":
             return self._validate_concept_merge(package, value)
+        if package_type == "concept_merge_review":
+            return self._validate_concept_merge_review(package, value)
         if package_type == "object_alignment":
             return self._validate_object_alignment(package, value)
         if package_type == "state_normalization":
@@ -199,6 +202,24 @@ class SemanticAlignmentRunner:
             if row.get("concept_id") not in allowed:
                 raise ValueError("concept_id must be a candidate id, NEW, REPARSE, or INVALID")
         return len(cases)
+
+    @staticmethod
+    def _validate_concept_merge_review(package: dict[str, Any], value: dict[str, Any]) -> int:
+        pairs = value.get("merge_pairs")
+        if not isinstance(pairs, list):
+            raise ValueError("merge_pairs must be a list")
+        allowed = {
+            tuple(sorted((case["left"]["id"], case["right"]["id"])))
+            for case in package["cases"]
+        }
+        normalized: list[tuple[str, str]] = []
+        for pair in pairs:
+            if not isinstance(pair, list) or len(pair) != 2 or not all(isinstance(item, str) for item in pair):
+                raise ValueError("every merge pair requires two concept ids")
+            normalized.append(tuple(sorted(pair)))
+        if len(normalized) != len(set(normalized)) or not set(normalized) <= allowed:
+            raise ValueError("merge_pairs must be unique proposed pairs")
+        return len(package["cases"])
 
     @staticmethod
     def _validate_state_normalization(package: dict[str, Any], value: dict[str, Any]) -> int:

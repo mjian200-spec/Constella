@@ -190,6 +190,31 @@ class SemanticPackageBuilder:
             })
         return self._chunk("object_alignment", cases, objects_per_package, "cases")
 
+    def concept_merge_review_packages(
+        self,
+        proposal_results: list[dict[str, Any]],
+        *,
+        pairs_per_package: int = 10,
+    ) -> list[dict[str, Any]]:
+        seen: set[tuple[str, str]] = set()
+        cases: list[dict[str, Any]] = []
+        for result in proposal_results:
+            if result.get("status") != "success":
+                continue
+            for group in result["output"].get("merge_groups", []):
+                for left_index, left_id in enumerate(group):
+                    for right_id in group[left_index + 1:]:
+                        pair = tuple(sorted((left_id, right_id)))
+                        if pair in seen:
+                            continue
+                        seen.add(pair)
+                        cases.append({
+                            "left": self._concept_payload(pair[0]),
+                            "right": self._concept_payload(pair[1]),
+                        })
+        cases.sort(key=lambda item: (item["left"]["id"], item["right"]["id"]))
+        return self._chunk("concept_merge_review", cases, pairs_per_package, "cases")
+
     def state_normalization_packages(
         self,
         alignments: dict[str, str],

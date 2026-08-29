@@ -91,12 +91,20 @@ def main() -> int:
         models, args.model_key, ROOT / "prompts" / "semantic_alignment", output_dir, workers=workers,
     )
     if args.stage in {"concept", "all"}:
-        results, run_report = runner.run(concept_packages, limit=args.concept_limit, refresh=args.refresh)
-        concepts, relations, id_map, assembly_report = assemble_concepts(inputs, results)
+        proposal_results, proposal_report = runner.run(
+            concept_packages, limit=args.concept_limit, refresh=args.refresh,
+        )
+        review_packages = builder.concept_merge_review_packages(proposal_results)
+        review_results, review_report = runner.run(review_packages, refresh=args.refresh)
+        concepts, relations, id_map, assembly_report = assemble_concepts(inputs, review_results)
         write_jsonl(output_dir / "concepts_merged.jsonl", concepts)
         write_jsonl(output_dir / "concept_relations_merged.jsonl", relations)
         write_json(output_dir / "concept_id_map.json", id_map)
-        reports["concept"] = {**run_report, **assembly_report}
+        reports["concept"] = {
+            "proposal": proposal_report,
+            "review": review_report,
+            **assembly_report,
+        }
     else:
         concepts = _read_jsonl(output_dir / "concepts_merged.jsonl")
 
