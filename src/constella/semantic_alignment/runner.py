@@ -12,18 +12,12 @@ import yaml
 
 from constella.context_builder.llm_client import LLMClient
 
-
-PROMPT_FILES = {
-    "concept_merge": "concept_merge_v1.yaml",
-    "concept_merge_review": "concept_merge_review_v1.yaml",
-    "object_alignment": "object_alignment_v1.yaml",
-    "state_object_alignment": "state_object_alignment_v1.yaml",
-    "state_repair": "state_repair_v1.yaml",
-    "state_normalization": "state_normalization_v1.yaml",
-}
+from .models import PackageTier, SemanticRole, TIER_ORDER
 
 
 class SemanticAlignmentRunner:
+    """Run tier-homogeneous packages in confidence order against one prompt."""
+
     def __init__(
         self,
         models: dict[str, Any],
@@ -38,14 +32,10 @@ class SemanticAlignmentRunner:
             raise ValueError("workers must be at least 1")
         self.models = models
         self.model_key = model_key
-        self.prompt_dir = Path(prompt_dir)
         self.output_dir = Path(output_dir)
         self.workers = workers
         self.client = client or LLMClient(models)
-        self.prompts = {
-            package_type: self._load_prompt(self.prompt_dir / filename)
-            for package_type, filename in PROMPT_FILES.items()
-        }
+        self.prompt = self._load_prompt(Path(prompt_dir) / "object_alignment_v1.yaml")
 
     @staticmethod
     def _load_prompt(path: Path) -> dict[str, Any]:
@@ -59,68 +49,92 @@ class SemanticAlignmentRunner:
         packages: list[dict[str, Any]],
         *,
         limit: int | None = None,
+        max_tier: str = PackageTier.H3,
         refresh: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        selected = packages[:limit] if limit is not None else packages
+        if max_tier not in TIER_ORDER:
+            raise ValueError(f"unsupported max tier: {max_tier}")
+        eligible = [
+            package for package in packages
+            if TIER_ORDER[PackageTier(package["tier"])] <= TIER_ORDER[PackageTier(max_tier)]
+        ]
+        selected = eligible[:limit] if limit is not None else eligible
         started = time.monotonic()
+        indexed = list(enumerate(selected))
         results: list[dict[str, Any] | None] = [None] * len(selected)
         cached_count = 0
-        pending: list[tuple[int, dict[str, Any]]] = []
-        for index, package in enumerate(selected):
-            cached = None if refresh else self._load_cached(package)
-            if cached is None:
-                pending.append((index, package))
-            else:
-                results[index] = cached
-                cached_count += 1
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = {pool.submit(self._process, package): index for index, package in pending}
-            for future in as_completed(futures):
-                index = futures[future]
-                try:
-                    results[index] = future.result()
-                except Exception as error:
-                    package = selected[index]
-                    results[index] = {
-                        "package_id": package.get("package_id"),
-                        "package_type": package.get("package_type"),
-                        "status": "failed",
-                        "attempt_count": 0,
-                        "covered_item_count": 0,
-                        "errors": [f"unhandled:{type(error).__name__}: {error}"],
-                    }
+        tier_reports: list[dict[str, Any]] = []
+        for tier in sorted(
+            {str(package["tier"]) for package in selected},
+            key=lambda value: TIER_ORDER[PackageTier(value)],
+        ):
+            tier_started = time.monotonic()
+            pending: list[tuple[int, dict[str, Any]]] = []
+            tier_cached = 0
+            for index, package in indexed:
+                if str(package["tier"]) != tier:
+                    continue
+                cached = None if refresh else self._load_cached(package)
+                if cached is None:
+                    pending.append((index, package))
+                else:
+                    results[index] = cached
+                    cached_count += 1
+                    tier_cached += 1
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                futures = {pool.submit(self._process, package): index for index, package in pending}
+                for future in as_completed(futures):
+                    index = futures[future]
+                    try:
+                        results[index] = future.result()
+                    except Exception as error:
+                        package = selected[index]
+                        results[index] = {
+                            "package_id": package.get("package_id"),
+                            "package_type": package.get("package_type"),
+                            "tier": package.get("tier"),
+                            "memory_version": package.get("memory_version"),
+                            "status": "failed",
+                            "attempt_count": 0,
+                            "covered_item_count": 0,
+                            "errors": [f"unhandled:{type(error).__name__}: {error}"],
+                        }
+            tier_results = [
+                results[index] for index, package in indexed
+                if str(package["tier"]) == tier and results[index] is not None
+            ]
+            tier_reports.append({
+                "tier": tier,
+                "package_count": len(tier_results),
+                "success_count": sum(row["status"] == "success" for row in tier_results),
+                "cached_count": tier_cached,
+                "elapsed_seconds": round(time.monotonic() - tier_started, 3),
+            })
         final = [row for row in results if row is not None]
         success = [row for row in final if row["status"] == "success"]
         report = {
-            "package_type": selected[0]["package_type"] if selected else None,
+            "package_type": "object_alignment",
             "selected_package_count": len(selected),
+            "eligible_package_count": len(eligible),
             "success_count": len(success),
             "failed_count": len(final) - len(success),
             "cached_count": cached_count,
             "protocol_success_rate": round(len(success) / len(selected), 4) if selected else 1.0,
             "decision_coverage_rate": round(
                 sum(row.get("covered_item_count", 0) for row in success)
-                / max(1, sum(self._item_count(package) for package in selected)),
+                / max(1, sum(len(package["cases"]) for package in selected)),
                 4,
             ),
+            "max_tier": str(max_tier),
+            "tier_reports": tier_reports,
             "elapsed_seconds": round(time.monotonic() - started, 3),
         }
-        if report["package_type"] == "state_normalization":
-            group_count = sum(row.get("quality", {}).get("state_group_count", 0) for row in success)
-            explicit_count = sum(
-                row.get("quality", {}).get("explicit_subject_group_count", 0) for row in success
-            )
-            report["state_group_count"] = group_count
-            report["explicit_subject_group_count"] = explicit_count
-            report["explicit_subject_rate"] = round(explicit_count / group_count, 4) if group_count else 1.0
         return final, report
 
     def _process(self, package: dict[str, Any]) -> dict[str, Any]:
-        package_type = str(package["package_type"])
-        prompt = self.prompts[package_type]
-        fingerprint = self._fingerprint(package, prompt)
+        fingerprint = self._fingerprint(package, self.prompt)
         messages = [
-            {"role": "system", "content": prompt["system"]},
+            {"role": "system", "content": self.prompt["system"]},
             {"role": "user", "content": json.dumps(package, ensure_ascii=False)},
         ]
         errors: list[str] = []
@@ -131,28 +145,26 @@ class SemanticAlignmentRunner:
                     self.model_key,
                     messages,
                     response_format={"type": "json_object"},
-                    prompt_id=prompt["id"],
-                    prompt_version=str(prompt["version"]),
+                    prompt_id=self.prompt["id"],
+                    prompt_version=str(self.prompt["version"]),
                     input_unit_ids=[],
-                    max_tokens=int(prompt.get("max_tokens", 800)),
+                    max_tokens=int(self.prompt.get("max_tokens", 2400)),
                 )
                 content = response["choices"][0]["message"]["content"]
                 raw_outputs.append(content)
                 value = json.loads(content)
-                value = self._normalize_output(package, value)
                 covered = self._validate(package, value)
                 result = {
                     "package_id": package["package_id"],
-                    "package_type": package_type,
+                    "package_type": package["package_type"],
+                    "tier": package["tier"],
+                    "memory_version": package["memory_version"],
                     "status": "success",
                     "attempt_count": attempt,
                     "input_fingerprint": fingerprint,
                     "covered_item_count": covered,
                     "output": value,
                 }
-                quality = self._quality(package, value)
-                if quality:
-                    result["quality"] = quality
                 try:
                     self._store(package, result)
                 except Exception as error:
@@ -167,7 +179,9 @@ class SemanticAlignmentRunner:
                     })
         result = {
             "package_id": package["package_id"],
-            "package_type": package_type,
+            "package_type": package["package_type"],
+            "tier": package["tier"],
+            "memory_version": package["memory_version"],
             "status": "failed",
             "attempt_count": 2,
             "input_fingerprint": fingerprint,
@@ -182,218 +196,58 @@ class SemanticAlignmentRunner:
         return result
 
     @staticmethod
-    def _normalize_output(package: dict[str, Any], value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        if package.get("package_type") == "concept_merge":
-            groups = value.get("merge_groups")
-            if not isinstance(groups, list):
-                return value
-            components: list[set[str]] = []
-            for group in groups:
-                if not isinstance(group, list) or not all(isinstance(item, str) for item in group):
-                    continue
-                merged = set(group)
-                untouched: list[set[str]] = []
-                for component in components:
-                    if component & merged:
-                        merged.update(component)
-                    else:
-                        untouched.append(component)
-                components = [*untouched, merged]
-            value["merge_groups"] = [sorted(component) for component in components if len(component) >= 2]
-            return value
-        if package.get("package_type") != "state_repair":
-            return value
-        repairs = value.get("repairs")
-        if not isinstance(repairs, list):
-            return value
-        repairs = [
-            row for row in repairs
-            if isinstance(row, dict) and isinstance(row.get("parts"), list) and row["parts"]
-        ]
-        value["repairs"] = repairs
-        repaired_ids = {row.get("state_id") for row in repairs if isinstance(row, dict)}
-        unresolved = value.get("unresolved_ids")
-        invalid = value.get("invalid_ids")
-        if isinstance(unresolved, list):
-            value["unresolved_ids"] = list(dict.fromkeys(
-                state_id for state_id in unresolved if state_id not in repaired_ids
-            ))
-        terminal_ids = repaired_ids | set(value.get("unresolved_ids") or [])
-        if isinstance(invalid, list):
-            value["invalid_ids"] = list(dict.fromkeys(
-                state_id for state_id in invalid if state_id not in terminal_ids
-            ))
-        return value
-
-    @staticmethod
-    def _quality(package: dict[str, Any], value: dict[str, Any]) -> dict[str, int] | None:
-        if package.get("package_type") != "state_normalization":
-            return None
-        names = [package["concept"].get("name"), *(package["concept"].get("aliases") or [])]
-        normalized_names = {"".join(str(name).split()).lower() for name in names if name}
-        groups = value.get("groups") or []
-        explicit = sum(
-            any(name in "".join(str(group.get("canonical") or "").split()).lower() for name in normalized_names)
-            for group in groups
-        )
-        return {"state_group_count": len(groups), "explicit_subject_group_count": explicit}
-
-    def _validate(self, package: dict[str, Any], value: dict[str, Any]) -> int:
+    def _validate(package: dict[str, Any], value: dict[str, Any]) -> int:
         if not isinstance(value, dict):
             raise ValueError("output must be an object")
-        package_type = package["package_type"]
-        if package_type == "concept_merge":
-            return self._validate_concept_merge(package, value)
-        if package_type == "concept_merge_review":
-            return self._validate_concept_merge_review(package, value)
-        if package_type == "object_alignment":
-            return self._validate_object_alignment(package, value)
-        if package_type == "state_object_alignment":
-            return self._validate_state_object_alignment(package, value)
-        if package_type == "state_repair":
-            return self._validate_state_repair(package, value)
-        if package_type == "state_normalization":
-            return self._validate_state_normalization(package, value)
-        raise ValueError(f"Unsupported package type: {package_type}")
-
-    @staticmethod
-    def _validate_concept_merge(package: dict[str, Any], value: dict[str, Any]) -> int:
-        groups = value.get("merge_groups")
-        if not isinstance(groups, list):
-            raise ValueError("merge_groups must be a list")
-        allowed: set[str] = set()
-        for case in package["cases"]:
-            allowed.add(case["anchor"]["id"])
-            allowed.update(item["id"] for item in case["candidates"])
-        seen: set[str] = set()
-        for group in groups:
-            if not isinstance(group, list) or len(group) < 2 or not all(isinstance(item, str) for item in group):
-                raise ValueError("every merge group requires at least two concept ids")
-            if not set(group) <= allowed:
-                raise ValueError("merge group contains an unknown concept id")
-            if len(set(group)) != len(group) or seen & set(group):
-                raise ValueError("concept ids must not repeat across merge groups")
-            seen.update(group)
-        return len(package["cases"])
-
-    @staticmethod
-    def _validate_object_alignment(package: dict[str, Any], value: dict[str, Any]) -> int:
-        rows = value.get("alignments")
+        rows = value.get("interpretations")
         if not isinstance(rows, list):
-            raise ValueError("alignments must be a list")
-        cases = {item["object_id"]: item for item in package["cases"]}
-        package_concept_ids = {
-            candidate["id"] for case in package["cases"] for candidate in case["candidates"]
-        }
-        if {item.get("object_id") for item in rows} != set(cases):
-            raise ValueError("alignments must cover every object exactly once")
-        if len(rows) != len(cases):
-            raise ValueError("duplicate object alignment")
+            raise ValueError("interpretations must be a list")
+        cases = {str(case["object_id"]): case for case in package["cases"]}
+        ids = [str(row.get("object_id") or "") for row in rows if isinstance(row, dict)]
+        if len(ids) != len(set(ids)) or set(ids) != set(cases):
+            raise ValueError("interpretations must cover every object exactly once")
         for row in rows:
-            allowed = package_concept_ids | {"NEW", "REPARSE", "INVALID"}
-            if row.get("concept_id") not in allowed:
-                raise ValueError("concept_id must be a candidate id, NEW, REPARSE, or INVALID")
+            if not isinstance(row, dict):
+                raise ValueError("every interpretation must be an object")
+            decision = row.get("decision")
+            if decision not in {"ATOMIC", "DECOMPOSED", "EXPRESSION_ONLY"}:
+                raise ValueError("invalid interpretation decision")
+            core_objects = row.get("core_objects")
+            embedded_states = row.get("embedded_states")
+            qualifiers = row.get("qualifiers")
+            if not isinstance(core_objects, list) or not isinstance(embedded_states, list) or not isinstance(qualifiers, list):
+                raise ValueError("core_objects, embedded_states, and qualifiers must be lists")
+            if decision == "ATOMIC" and len(core_objects) != 1:
+                raise ValueError("ATOMIC interpretation requires exactly one core object")
+            if decision == "DECOMPOSED" and not 1 <= len(core_objects) <= 4:
+                raise ValueError("DECOMPOSED interpretation requires one to four core objects")
+            if decision == "EXPRESSION_ONLY" and core_objects:
+                raise ValueError("EXPRESSION_ONLY must not invent core objects")
+            allowed = {str(candidate["id"]) for candidate in cases[row["object_id"]]["candidates"]}
+            seen_core: set[tuple[str, str]] = set()
+            for core in core_objects:
+                if not isinstance(core, dict) or not isinstance(core.get("text"), str) or not core["text"].strip():
+                    raise ValueError("every core object requires non-empty text")
+                concept_id = core.get("concept_id")
+                if concept_id is not None and concept_id not in allowed:
+                    raise ValueError("core concept_id must be a candidate of the same case or null")
+                key = (core["text"].strip(), str(concept_id or ""))
+                if key in seen_core:
+                    raise ValueError("duplicate core object")
+                seen_core.add(key)
+            if len(embedded_states) > 8:
+                raise ValueError("an interpretation supports at most eight embedded states")
+            for state in embedded_states:
+                if not isinstance(state, dict) or state.get("role") not in {
+                    SemanticRole.OBJECT_INTRINSIC_STATE, SemanticRole.RULE_CONDITION,
+                }:
+                    raise ValueError("invalid embedded state role")
+                for field in ("subject_text", "state_text"):
+                    if not isinstance(state.get(field), str) or not state[field].strip():
+                        raise ValueError(f"embedded state requires {field}")
+            if len(qualifiers) > 8 or not all(isinstance(item, str) and item.strip() for item in qualifiers):
+                raise ValueError("qualifiers must contain at most eight non-empty strings")
         return len(cases)
-
-    @staticmethod
-    def _validate_concept_merge_review(package: dict[str, Any], value: dict[str, Any]) -> int:
-        pairs = value.get("merge_pairs")
-        if not isinstance(pairs, list):
-            raise ValueError("merge_pairs must be a list")
-        allowed = {
-            tuple(sorted((case["left"]["id"], case["right"]["id"])))
-            for case in package["cases"]
-        }
-        normalized: list[tuple[str, str]] = []
-        for pair in pairs:
-            if not isinstance(pair, list) or len(pair) != 2 or not all(isinstance(item, str) for item in pair):
-                raise ValueError("every merge pair requires two concept ids")
-            normalized.append(tuple(sorted(pair)))
-        if len(normalized) != len(set(normalized)) or not set(normalized) <= allowed:
-            raise ValueError("merge_pairs must be unique proposed pairs")
-        return len(package["cases"])
-
-    @staticmethod
-    def _validate_state_object_alignment(package: dict[str, Any], value: dict[str, Any]) -> int:
-        rows = value.get("alignments")
-        if not isinstance(rows, list):
-            raise ValueError("alignments must be a list")
-        cases = {item["state_id"]: item for item in package["cases"]}
-        if len(rows) != len(cases) or {item.get("state_id") for item in rows} != set(cases):
-            raise ValueError("alignments must cover every state exactly once")
-        package_concept_ids = {
-            candidate["id"] for case in package["cases"] for candidate in case["candidates"]
-        }
-        allowed = package_concept_ids | {"INVALID", "UNRESOLVED"}
-        if any(row.get("concept_id") not in allowed for row in rows):
-            raise ValueError("concept_id must be a package candidate, INVALID, or UNRESOLVED")
-        return len(cases)
-
-    @staticmethod
-    def _validate_state_repair(package: dict[str, Any], value: dict[str, Any]) -> int:
-        decisions = value.get("repairs")
-        unresolved = value.get("unresolved_ids")
-        invalid = value.get("invalid_ids")
-        if not all(isinstance(rows, list) for rows in (decisions, unresolved, invalid)):
-            raise ValueError("repairs, unresolved_ids, and invalid_ids must be lists")
-        cases = {item["state_id"]: item for item in package["cases"]}
-        repaired_ids = [row.get("state_id") for row in decisions]
-        covered = [*repaired_ids, *unresolved, *invalid]
-        if len(covered) != len(set(covered)) or set(covered) != set(cases):
-            missing = sorted(set(cases) - set(covered))
-            unexpected = sorted(set(covered) - set(cases))
-            duplicates = sorted(state_id for state_id in set(covered) if covered.count(state_id) > 1)
-            raise ValueError(
-                "repair output must cover every state exactly once; "
-                f"missing={missing}, unexpected={unexpected}, duplicates={duplicates}"
-            )
-        allowed = {
-            candidate["id"] for case in package["cases"] for candidate in case["candidates"]
-        } | {"NEW"}
-        for decision in decisions:
-            parts = decision.get("parts")
-            if not isinstance(parts, list) or not 1 <= len(parts) <= 8:
-                raise ValueError("every repair requires between one and eight atomic parts")
-            seen_parts: set[tuple[str, str, str]] = set()
-            for part in parts:
-                if part.get("concept_id") not in allowed:
-                    raise ValueError("repair concept_id must be a package candidate or NEW")
-                object_name = part.get("object_name")
-                state_text = part.get("state_text")
-                if not isinstance(object_name, str) or not object_name.strip():
-                    raise ValueError("every repair part requires object_name")
-                if not isinstance(state_text, str) or not state_text.strip():
-                    raise ValueError("every repair part requires state_text")
-                key = (part["concept_id"], object_name.strip(), state_text.strip())
-                if key in seen_parts:
-                    raise ValueError("duplicate repair part")
-                seen_parts.add(key)
-        return len(cases)
-
-    @staticmethod
-    def _validate_state_normalization(package: dict[str, Any], value: dict[str, Any]) -> int:
-        groups = value.get("groups")
-        exceptions = value.get("exceptions")
-        if not isinstance(groups, list) or not isinstance(exceptions, list):
-            raise ValueError("groups and exceptions must be lists")
-        allowed = {item["id"] for item in package["states"]}
-        covered: list[str] = []
-        for group in groups:
-            members = group.get("members")
-            if not isinstance(group.get("canonical"), str) or not group["canonical"].strip():
-                raise ValueError("every state group requires canonical text")
-            if not isinstance(members, list) or not members:
-                raise ValueError("every state group requires members")
-            covered.extend(members)
-        for row in exceptions:
-            if row.get("type") not in {"WRONG_CONCEPT", "INVALID", "UNCERTAIN"}:
-                raise ValueError("invalid state exception type")
-            covered.append(row.get("state_id"))
-        if len(covered) != len(set(covered)) or set(covered) != allowed:
-            raise ValueError("groups and exceptions must cover every state exactly once")
-        return len(allowed)
 
     def _load_cached(self, package: dict[str, Any]) -> dict[str, Any] | None:
         path = self._result_path(package)
@@ -401,45 +255,35 @@ class SemanticAlignmentRunner:
             return None
         try:
             result = json.loads(path.read_text(encoding="utf-8"))
-            prompt = self.prompts[package["package_type"]]
-            if result.get("input_fingerprint") != self._fingerprint(package, prompt):
+            if result.get("input_fingerprint") != self._fingerprint(package, self.prompt):
                 return None
             if result.get("status") != "success":
                 return None
             self._validate(package, result["output"])
             return result
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             return None
 
     def _store(self, package: dict[str, Any], result: dict[str, Any]) -> None:
-        package_path = self._package_path(package)
-        result_path = self._result_path(package)
-        self._atomic_json(package_path, package)
-        self._atomic_json(result_path, result)
+        self._atomic_json(self._package_path(package), package)
+        self._atomic_json(self._result_path(package), result)
 
     def _package_path(self, package: dict[str, Any]) -> Path:
-        return self.output_dir / "packages" / package["package_type"] / f"{package['package_id']}.json"
+        return self.output_dir / "packages" / "object_alignment" / f"{package['package_id']}.json"
 
     def _result_path(self, package: dict[str, Any]) -> Path:
-        return self.output_dir / "results" / package["package_type"] / f"{package['package_id']}.json"
+        return self.output_dir / "results" / "object_alignment" / f"{package['package_id']}.json"
 
     @staticmethod
     def _atomic_json(path: Path, value: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
+        temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temporary, path)
+        temporary.replace(path)
 
     @staticmethod
     def _fingerprint(package: dict[str, Any], prompt: dict[str, Any]) -> str:
-        value = {
-            "package": package,
-            "prompt_id": prompt["id"],
-            "prompt_version": str(prompt["version"]),
-        }
-        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-    @staticmethod
-    def _item_count(package: dict[str, Any]) -> int:
-        return len(package.get("cases") or package.get("states") or [])
+        payload = {"package": package, "prompt": prompt}
+        return hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()

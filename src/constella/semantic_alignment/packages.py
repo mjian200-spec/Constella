@@ -1,22 +1,15 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
-import math
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any
 
-
-def normalize_text(value: str) -> str:
-    return "".join(str(value).split()).lower()
-
-
-def stable_id(prefix: str, value: Any) -> str:
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return f"{prefix}_{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
+from .models import AlignmentStatus, ConceptType, PackageTier, TIER_ORDER
+from .registry import CharNgramIndex, ConceptRegistry, MemorySnapshot, normalize_text, stable_id
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -34,6 +27,14 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _file_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(slots=True)
 class AlignmentInputs:
     concepts: list[dict[str, Any]]
@@ -41,6 +42,7 @@ class AlignmentInputs:
     rules: list[dict[str, Any]]
     context_packages: dict[str, dict[str, Any]]
     units: dict[str, dict[str, Any]]
+    input_manifest: dict[str, Any] = field(default_factory=dict)
 
 
 def load_alignment_inputs(
@@ -50,566 +52,309 @@ def load_alignment_inputs(
 ) -> AlignmentInputs:
     rule_dir = Path(rule_output_dir)
     concept_dir = Path(concept_output_dir)
+    rule_path = rule_dir / "structured_rules.jsonl"
+    concept_path = concept_dir / "concepts.jsonl"
+    relation_path = concept_dir / "concept_relations.jsonl"
     context_packages: dict[str, dict[str, Any]] = {}
     processed = rule_dir / "processed_context_packages.jsonl"
     if processed.is_file():
-        context_packages = {row["id"]: row for row in _read_jsonl(processed)}
+        context_packages = {str(row["id"]): row for row in _read_jsonl(processed)}
     units: dict[str, dict[str, Any]] = {}
+    graph_path: Path | None = None
     if context_output_dir is not None:
         graph_path = Path(context_output_dir) / "document_graph.json"
         if graph_path.is_file():
             graph = json.loads(graph_path.read_text(encoding="utf-8"))
             units = graph.get("units") or {}
+    files = [rule_path, concept_path, relation_path]
+    if processed.is_file():
+        files.append(processed)
+    if graph_path and graph_path.is_file():
+        files.append(graph_path)
     return AlignmentInputs(
-        concepts=_read_jsonl(concept_dir / "concepts.jsonl"),
-        relations=_read_jsonl(concept_dir / "concept_relations.jsonl"),
-        rules=_read_jsonl(rule_dir / "structured_rules.jsonl"),
+        concepts=_read_jsonl(concept_path),
+        relations=_read_jsonl(relation_path),
+        rules=_read_jsonl(rule_path),
         context_packages=context_packages,
         units=units,
+        input_manifest={
+            "files": [{"path": str(path), "sha256": _file_fingerprint(path)} for path in files],
+        },
     )
 
 
-class CharNgramIndex:
-    """Dependency-free sparse character n-gram TF-IDF candidate index."""
-
-    def __init__(self, documents: dict[str, str], *, ngrams: tuple[int, ...] = (2, 3)) -> None:
-        self.ngrams = ngrams
-        self.size = len(documents)
-        terms = {key: Counter(self._terms(text)) for key, text in documents.items()}
-        document_frequency: Counter[str] = Counter()
-        for counts in terms.values():
-            document_frequency.update(counts.keys())
-        self.idf = {
-            term: math.log((1 + self.size) / (1 + frequency)) + 1
-            for term, frequency in document_frequency.items()
-        }
-        self.vectors = {key: self._vector(counts) for key, counts in terms.items()}
-        self.inverted: dict[str, list[tuple[str, float]]] = defaultdict(list)
-        for key, vector in self.vectors.items():
-            for term, weight in vector.items():
-                self.inverted[term].append((key, weight))
-
-    def _terms(self, text: str) -> Iterable[str]:
-        normalized = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(text).lower())
-        if not normalized:
-            return []
-        result: list[str] = []
-        for size in self.ngrams:
-            if len(normalized) < size:
-                continue
-            result.extend(normalized[index:index + size] for index in range(len(normalized) - size + 1))
-        return result or [normalized]
-
-    def _vector(self, counts: Counter[str]) -> dict[str, float]:
-        weighted = {term: (1 + math.log(count)) * self.idf.get(term, 1.0) for term, count in counts.items()}
-        norm = math.sqrt(sum(value * value for value in weighted.values()))
-        return {term: value / norm for term, value in weighted.items()} if norm else {}
-
-    def query(self, text: str, *, top_k: int, exclude: set[str] | None = None) -> list[tuple[str, float]]:
-        vector = self._vector(Counter(self._terms(text)))
-        scores: Counter[str] = Counter()
-        for term, query_weight in vector.items():
-            for key, weight in self.inverted.get(term, []):
-                scores[key] += query_weight * weight
-        excluded = exclude or set()
-        return [(key, score) for key, score in scores.most_common() if key not in excluded][:top_k]
+_STRUCTURE_PATTERNS = (
+    re.compile(r"[、,，/；;]|(?:以及|及其|和|与|或)"),
+    re.compile(r"(?:当|在)?.*(?:超过|大于|小于|高于|低于|不少于|不超过|≥|≤|>|<).*[0-9]"),
+    re.compile(
+        r"[0-9]+(?:\.[0-9]+)?\s*(?:°C|℃|K|m?A|kA|m?V|kV|mm|cm|μm|%)(?:时|的)?",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:时|情况下|条件下|处于|正在|中的|状态的)"),
+)
 
 
 class SemanticPackageBuilder:
-    def __init__(self, inputs: AlignmentInputs) -> None:
-        self.inputs = inputs
-        self.concepts = {str(row["concept_id"]): row for row in inputs.concepts}
-        self.object_rows = self._collect_objects()
-        self.name_to_concepts: dict[str, list[str]] = defaultdict(list)
-        for concept_id, concept in self.concepts.items():
-            for name in [concept.get("canonical_name"), *(concept.get("aliases") or [])]:
-                if name:
-                    self.name_to_concepts[normalize_text(str(name))].append(concept_id)
+    """Collect sources, score object interpretations, and build tier-homogeneous packages."""
 
-    def concept_merge_packages(
-        self,
-        *,
-        candidates_per_anchor: int = 5,
-        anchors_per_package: int = 10,
-        anchor_ids: set[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        signatures = {concept_id: self._concept_signature(row) for concept_id, row in self.concepts.items()}
-        index = CharNgramIndex(signatures)
-        seen_pairs: set[tuple[str, str]] = set()
-        cases: list[dict[str, Any]] = []
-        for concept_id in sorted(anchor_ids if anchor_ids is not None else self.concepts):
-            if concept_id not in self.concepts:
-                continue
-            candidates: list[dict[str, Any]] = []
-            for candidate_id, _score in index.query(
-                signatures[concept_id], top_k=candidates_per_anchor * 3, exclude={concept_id},
-            ):
-                pair = tuple(sorted((concept_id, candidate_id)))
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
-                candidates.append(self._concept_payload(candidate_id))
-                if len(candidates) >= candidates_per_anchor:
-                    break
-            if candidates:
-                cases.append({"anchor": self._concept_payload(concept_id), "candidates": candidates})
-        return self._chunk("concept_merge", cases, anchors_per_package, "cases")
+    def __init__(self, inputs: AlignmentInputs, *, memory: MemorySnapshot | None = None) -> None:
+        self.inputs = inputs
+        self.memory = memory or MemorySnapshot.build(inputs.concepts, inputs.relations)
+        self.registry = ConceptRegistry(self.memory)
+        self._candidate_cache: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        self.source_occurrence_count = 0
+        self.state_rows, self.object_rows = self._collect_sources()
+        self.mechanical_interpretations: dict[str, dict[str, Any]] = {}
+        self.scored_cases = self._score_objects()
 
     def object_alignment_packages(
         self,
-        concepts: list[dict[str, Any]] | None = None,
         *,
-        candidates_per_object: int = 8,
-        objects_per_package: int = 15,
-        object_ids: set[str] | None = None,
+        candidates_per_object: int = 6,
+        objects_per_package: int = 12,
+        max_package_chars: int = 40_000,
     ) -> list[dict[str, Any]]:
-        available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
-        signatures = {concept_id: self._concept_signature(row) for concept_id, row in available.items()}
-        index = CharNgramIndex(signatures)
-        cases: list[dict[str, Any]] = []
-        ordered_object_keys = sorted(
-            self.object_rows,
-            key=lambda key: (-int(self.object_rows[key]["frequency"]), key),
-        )
-        for object_key in ordered_object_keys:
-            item = self.object_rows[object_key]
-            if object_ids is not None and item["object_id"] not in object_ids:
+        if objects_per_package < 1:
+            raise ValueError("objects_per_package must be at least 1")
+        if max_package_chars < 2_000:
+            raise ValueError("max_package_chars must be at least 2000")
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for source in self.scored_cases:
+            if source["object_id"] in self.mechanical_interpretations:
                 continue
-            signature = "\n".join([
-                item["name"], *item["states"],
-                *(context["relation"] for context in item["contexts"] if context.get("relation")),
-                *(context["counterpart"] for context in item["contexts"] if context.get("counterpart")),
-            ])
-            candidate_ids: list[str] = []
-            for exact_id in self.name_to_concepts.get(object_key, []):
-                if exact_id in available and exact_id not in candidate_ids:
-                    candidate_ids.append(exact_id)
-            for candidate_id, _score in index.query(signature, top_k=candidates_per_object * 2):
-                if candidate_id not in candidate_ids:
-                    candidate_ids.append(candidate_id)
-                if len(candidate_ids) >= candidates_per_object:
-                    break
-            cases.append({
-                "object_id": item["object_id"],
-                "name": item["name"],
-                "frequency": item["frequency"],
-                "states": item["states"],
-                "contexts": item["contexts"],
-                "candidates": [self._concept_payload(value, available) for value in candidate_ids],
-            })
-        return self._chunk("object_alignment", cases, objects_per_package, "cases")
-
-    def concept_merge_review_packages(
-        self,
-        proposal_results: list[dict[str, Any]],
-        *,
-        pairs_per_package: int = 10,
-    ) -> list[dict[str, Any]]:
-        seen: set[tuple[str, str]] = set()
-        cases: list[dict[str, Any]] = []
-        for result in proposal_results:
-            if result.get("status") != "success":
-                continue
-            for group in result["output"].get("merge_groups", []):
-                for left_index, left_id in enumerate(group):
-                    for right_id in group[left_index + 1:]:
-                        pair = tuple(sorted((left_id, right_id)))
-                        if pair in seen:
-                            continue
-                        seen.add(pair)
-                        cases.append({
-                            "left": self._concept_payload(pair[0]),
-                            "right": self._concept_payload(pair[1]),
-                        })
-        cases.sort(key=lambda item: (item["left"]["id"], item["right"]["id"]))
-        return self._chunk("concept_merge_review", cases, pairs_per_package, "cases")
-
-    def state_normalization_packages(
-        self,
-        alignments: dict[str, str],
-        concepts: list[dict[str, Any]] | None = None,
-        *,
-        states_per_package: int = 20,
-        state_alignments: dict[str, str] | None = None,
-        repaired_states: list[dict[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
-        available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
-        object_to_concept = {
-            object_key: alignments.get(item["object_id"])
-            for object_key, item in self.object_rows.items()
-        }
-        grouped: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
-        for rule in self.inputs.rules:
-            for role in ("conditions", "antecedents", "consequents"):
-                for state in rule.get(role) or []:
-                    state_id = str(state.get("id") or "")
-                    concept_id = (state_alignments or {}).get(state_id) or object_to_concept.get(
-                        normalize_text(str(state.get("object") or ""))
-                    )
-                    if not concept_id or concept_id in {
-                        "NEW", "REPARSE", "INVALID", "UNRESOLVED",
-                    } or concept_id not in available:
-                        continue
-                    record = grouped[concept_id].setdefault(state_id, {
-                        "id": state_id,
-                        "text": str(state.get("raw_state") or ""),
-                        "current_normalized": str(state.get("normalized_state") or ""),
-                        "contexts": [],
-                    })
-                    context = self._state_context(rule, role, state_id)
-                    if context not in record["contexts"] and len(record["contexts"]) < 2:
-                        record["contexts"].append(context)
-        for state in repaired_states or []:
-            concept_id = str(state.get("concept_id") or "")
-            if state.get("decision") not in {"ALIGNED", "NEW"} or concept_id not in available:
-                continue
-            state_id = str(state["derived_state_id"])
-            grouped[concept_id][state_id] = {
-                "id": state_id,
-                "source_state_id": state.get("source_state_id"),
-                "text": str(state.get("state_text") or ""),
-                "current_normalized": str(state.get("state_text") or ""),
-                "contexts": list(state.get("contexts") or [])[:2],
+            case = {
+                "object_id": source["object_id"],
+                "name": source["name"],
+                "raw_variants": source["raw_variants"],
+                "frequency": source["frequency"],
+                "state_examples": source["state_examples"],
+                "contexts": source["contexts"],
+                "confidence": source["confidence"],
+                "lexical_coverage": source["lexical_coverage"],
+                "structure_signal_count": source["structure_signal_count"],
+                "exact_resolution": source["exact_resolution"],
+                "candidates": self._object_candidates(source["name"], candidates_per_object),
             }
+            grouped[str(source["tier"])].append(case)
         packages: list[dict[str, Any]] = []
-        for concept_id in sorted(grouped):
-            states = list(grouped[concept_id].values())
-            for state_chunk in self._cluster_states(states, states_per_package):
-                payload = {
-                    "package_type": "state_normalization",
-                    "concept": self._concept_payload(concept_id, available, include_evidence=True),
-                    "states": state_chunk,
-                }
-                payload["package_id"] = stable_id("state_normalization", payload)
-                packages.append(payload)
+        for tier in sorted(grouped, key=lambda value: TIER_ORDER[PackageTier(value)]):
+            cases = sorted(grouped[tier], key=lambda row: (-int(row["frequency"]), row["object_id"]))
+            current: list[dict[str, Any]] = []
+            for case in cases:
+                candidate = self._package_payload(tier, [*current, case])
+                size = len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":")))
+                if current and (len(current) >= objects_per_package or size > max_package_chars):
+                    packages.append(self._finalize_package(tier, current))
+                    current = [case]
+                else:
+                    current.append(case)
+            if current:
+                packages.append(self._finalize_package(tier, current))
         return packages
 
-    def state_object_alignment_packages(
+    def _object_candidates(self, name: str, top_k: int) -> list[dict[str, Any]]:
+        key = (name, top_k)
+        if key not in self._candidate_cache:
+            self._candidate_cache[key] = self.registry.candidates(
+                name, concept_type=ConceptType.OBJECT, top_k=top_k,
+            )
+        return self._candidate_cache[key]
+
+    def selected_object_ids(
         self,
-        reparse_object_ids: set[str],
-        concepts: list[dict[str, Any]] | None = None,
+        packages: list[dict[str, Any]],
         *,
-        candidates_per_state: int = 8,
-        states_per_package: int = 15,
-    ) -> list[dict[str, Any]]:
-        available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
-        signatures = {concept_id: self._concept_signature(row) for concept_id, row in available.items()}
-        index = CharNgramIndex(signatures)
-        name_index: dict[str, list[str]] = defaultdict(list)
-        for concept_id, concept in available.items():
-            for name in [concept.get("canonical_name"), *(concept.get("aliases") or [])]:
-                if name:
-                    name_index[normalize_text(str(name))].append(concept_id)
-
-        object_id_by_key = {key: item["object_id"] for key, item in self.object_rows.items()}
-        cases: dict[str, dict[str, Any]] = {}
-        for rule in self.inputs.rules:
-            for role in ("conditions", "antecedents", "consequents"):
-                for state in rule.get(role) or []:
-                    object_name = str(state.get("object") or "")
-                    object_id = object_id_by_key.get(normalize_text(object_name))
-                    if object_id not in reparse_object_ids:
-                        continue
-                    state_id = str(state.get("id") or "")
-                    case = cases.setdefault(state_id, {
-                        "state_id": state_id,
-                        "source_object_id": object_id,
-                        "object_name": object_name,
-                        "state_text": str(state.get("raw_state") or ""),
-                        "current_normalized": str(state.get("normalized_state") or ""),
-                        "frequency": 0,
-                        "contexts": [],
-                    })
-                    case["frequency"] += 1
-                    context = self._state_context(rule, role, state_id)
-                    if context not in case["contexts"] and len(case["contexts"]) < 2:
-                        case["contexts"].append(context)
-
-        rows: list[dict[str, Any]] = []
-        for case in cases.values():
-            signature = "\n".join([
-                case["object_name"], case["state_text"], case["current_normalized"],
-                *(str(context.get("relation") or "") for context in case["contexts"]),
-                *(value for context in case["contexts"] for value in context.get("counterparts") or []),
-            ])
-            candidate_ids: list[str] = []
-            for name in (case["object_name"], case["state_text"], case["current_normalized"]):
-                for concept_id in name_index.get(normalize_text(name), []):
-                    if concept_id not in candidate_ids:
-                        candidate_ids.append(concept_id)
-            for concept_id, _score in index.query(signature, top_k=candidates_per_state * 2):
-                if concept_id not in candidate_ids:
-                    candidate_ids.append(concept_id)
-                if len(candidate_ids) >= candidates_per_state:
-                    break
-            rows.append({
-                **case,
-                "candidates": [self._concept_payload(concept_id, available) for concept_id in candidate_ids],
-            })
-        rows.sort(key=lambda row: (-int(row["frequency"]), row["state_id"]))
-        return self._chunk("state_object_alignment", rows, states_per_package, "cases")
-
-    def state_repair_packages(
-        self,
-        prior_alignments: list[dict[str, Any]],
-        concepts: list[dict[str, Any]] | None = None,
-        *,
-        candidates_per_state: int = 12,
-        states_per_package: int = 10,
-    ) -> list[dict[str, Any]]:
-        targets = {
-            str(row["state_id"]): row for row in prior_alignments
-            if row.get("decision") in {"UNRESOLVED", "INVALID"}
-        }
-        if not targets:
-            return []
-        available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
-        signatures = {concept_id: self._concept_signature(row) for concept_id, row in available.items()}
-        index = CharNgramIndex(signatures)
-        name_index: dict[str, list[str]] = defaultdict(list)
-        normalized_names: list[tuple[str, str]] = []
-        for concept_id, concept in available.items():
-            for name in [concept.get("canonical_name"), *(concept.get("aliases") or [])]:
-                if name:
-                    normalized_name = normalize_text(str(name))
-                    name_index[normalized_name].append(concept_id)
-                    normalized_names.append((normalized_name, concept_id))
-
-        contexts: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        source_states: dict[str, dict[str, Any]] = {}
-        for rule in self.inputs.rules:
-            for role in ("conditions", "antecedents", "consequents"):
-                for state in rule.get(role) or []:
-                    state_id = str(state.get("id") or "")
-                    if state_id not in targets:
-                        continue
-                    source_states.setdefault(state_id, state)
-                    context = self._state_context(rule, role, state_id)
-                    if context not in contexts[state_id] and len(contexts[state_id]) < 6:
-                        contexts[state_id].append(context)
-
-        cases: list[dict[str, Any]] = []
-        separators = re.compile(r"[、,，/；;]|(?:以及|及其|和|与|或)")
-        for state_id, prior in targets.items():
-            source = source_states.get(state_id, {})
-            object_name = str(prior.get("object_name") or source.get("object") or "")
-            state_text = str(prior.get("state_text") or source.get("raw_state") or "")
-            normalized = str(source.get("normalized_state") or state_text)
-            fragments = [value.strip() for value in separators.split(state_text) if value.strip()]
-            reduced_fragments = [
-                re.sub(r"^(?:含有?|存在|具有|对)", "", value).strip() for value in fragments
-            ]
-            fragments = list(dict.fromkeys([*fragments, *(value for value in reduced_fragments if value)]))
-            query_values = [*fragments, state_text, normalized, object_name]
-            candidate_ids: list[str] = []
-            for fragment in fragments:
-                key = normalize_text(fragment)
-                contained = sorted(
-                    (
-                        (name != key, abs(len(name) - len(key)), len(name), concept_id)
-                        for name, concept_id in normalized_names
-                        if key and (key in name or name in key)
-                    ),
-                )
-                for _not_exact, _distance, _length, concept_id in contained[:3]:
-                    if concept_id not in candidate_ids:
-                        candidate_ids.append(concept_id)
-                for concept_id, _score in index.query(fragment, top_k=2):
-                    if concept_id not in candidate_ids:
-                        candidate_ids.append(concept_id)
-            for value in query_values:
-                for concept_id in name_index.get(normalize_text(value), []):
-                    if concept_id not in candidate_ids:
-                        candidate_ids.append(concept_id)
-                for concept_id, _score in index.query(value, top_k=4):
-                    if concept_id not in candidate_ids:
-                        candidate_ids.append(concept_id)
-                    if len(candidate_ids) >= candidates_per_state:
-                        break
-                if len(candidate_ids) >= candidates_per_state:
-                    break
-            if "极性" in object_name or any(value in state_text for value in ("正极", "负极")):
-                polarity_names = {"dcen", "dcep接法", "直流正接", "直流反接"}
-                polarity_ids: list[str] = []
-                for name, concept_id in normalized_names:
-                    if name in polarity_names and concept_id not in polarity_ids:
-                        polarity_ids.append(concept_id)
-                candidate_ids = [*polarity_ids, *(value for value in candidate_ids if value not in polarity_ids)]
-            candidate_ids = candidate_ids[:candidates_per_state]
-            candidate_payloads = [
-                self._concept_payload(value, available) for value in candidate_ids
-            ]
-            if "极性" in object_name or any(value in state_text for value in ("正极", "负极")):
-                for payload in candidate_payloads:
-                    if normalize_text(payload["name"]) not in {"dcen", "dcep接法"}:
-                        continue
-                    concept = available[payload["id"]]
-                    evidence = next((
-                        str(self.inputs.units[evidence_id].get("content") or "")[:500]
-                        for evidence_id in concept.get("evidence_ids") or []
-                        if evidence_id in self.inputs.units and self.inputs.units[evidence_id].get("content")
-                    ), "")
-                    if evidence:
-                        payload["evidence"] = [evidence]
-            cases.append({
-                "state_id": state_id,
-                "object_name": object_name,
-                "state_text": state_text,
-                "current_normalized": normalized,
-                "previous_decision": prior.get("decision"),
-                "frequency": int(prior.get("frequency") or 0),
-                "contexts": contexts.get(state_id, [])[:6],
-                "candidates": candidate_payloads,
-            })
-        cases.sort(key=lambda row: (-int(row["frequency"]), row["state_id"]))
-        return self._chunk("state_repair", cases, states_per_package, "cases")
-
-    def atomic_state_alignment_packages(
-        self,
-        reparse_object_ids: set[str],
-        concepts: list[dict[str, Any]] | None = None,
-        *,
-        candidates_per_state: int = 12,
-        states_per_package: int = 10,
-    ) -> list[dict[str, Any]]:
-        """Build one-pass atomic alignment packages for all states of REPARSE objects."""
-        object_id_by_key = {key: item["object_id"] for key, item in self.object_rows.items()}
-        seeds: dict[str, dict[str, Any]] = {}
-        for rule in self.inputs.rules:
-            for role in ("conditions", "antecedents", "consequents"):
-                for state in rule.get(role) or []:
-                    object_name = str(state.get("object") or "")
-                    object_id = object_id_by_key.get(normalize_text(object_name))
-                    if object_id not in reparse_object_ids:
-                        continue
-                    state_id = str(state.get("id") or "")
-                    row = seeds.setdefault(state_id, {
-                        "state_id": state_id,
-                        "source_object_id": object_id,
-                        "object_name": object_name,
-                        "state_text": str(state.get("raw_state") or ""),
-                        "decision": "UNRESOLVED",
-                        "frequency": 0,
-                    })
-                    row["frequency"] += 1
-        return self.state_repair_packages(
-            list(seeds.values()), concepts,
-            candidates_per_state=candidates_per_state,
-            states_per_package=states_per_package,
-        )
-
-    @staticmethod
-    def _cluster_states(states: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
-        if not states:
-            return []
-        by_id = {str(item["id"]): item for item in states}
-        signatures = {
-            state_id: "\n".join([
-                str(item.get("text") or ""), str(item.get("current_normalized") or ""),
-            ])
-            for state_id, item in by_id.items()
-        }
-        index = CharNgramIndex(signatures)
-        remaining = set(by_id)
-        chunks: list[list[dict[str, Any]]] = []
-        while remaining:
-            anchor = min(remaining)
-            excluded = set(by_id) - remaining | {anchor}
-            neighbor_ids = [
-                state_id for state_id, _ in index.query(
-                    signatures[anchor], top_k=max(0, size - 1), exclude=excluded,
-                )
-            ]
-            selected = [anchor, *neighbor_ids]
-            if len(selected) < size:
-                selected.extend(sorted(remaining - set(selected))[:size - len(selected)])
-            selected = selected[:size]
-            remaining.difference_update(selected)
-            chunks.append([by_id[state_id] for state_id in selected])
-        return chunks
-
-    def _collect_objects(self) -> dict[str, dict[str, Any]]:
-        aggregate: dict[str, dict[str, Any]] = {}
-        state_counts: dict[str, Counter[str]] = defaultdict(Counter)
-        context_counts: dict[str, Counter[tuple[str, str]]] = defaultdict(Counter)
-        for rule in self.inputs.rules:
-            all_states = [
-                state for role in ("conditions", "antecedents", "consequents")
-                for state in (rule.get(role) or [])
-            ]
-            for state in all_states:
-                name = str(state.get("object") or "").strip()
-                key = normalize_text(name)
-                if not key:
-                    continue
-                item = aggregate.setdefault(key, {
-                    "object_id": stable_id("object", key), "name": name, "frequency": 0,
-                })
-                item["frequency"] += 1
-                state_counts[key][str(state.get("raw_state") or "")] += 1
-                counterparts = [
-                    f"{other.get('object', '')}|{other.get('raw_state', '')}"
-                    for other in all_states if other.get("id") != state.get("id")
-                ]
-                for counterpart in counterparts[:2]:
-                    context_counts[key][(str(rule.get("relation") or ""), counterpart)] += 1
-        for key, item in aggregate.items():
-            item["states"] = [value for value, _ in state_counts[key].most_common(5) if value]
-            item["contexts"] = [
-                {"relation": relation, "counterpart": counterpart}
-                for (relation, counterpart), _ in context_counts[key].most_common(3)
-            ]
-        return aggregate
-
-    def _concept_signature(self, row: dict[str, Any]) -> str:
-        concept_id = str(row.get("concept_id") or "")
-        relation_names: list[str] = []
-        for relation in self.inputs.relations:
-            child = str(relation.get("child_concept_id") or "")
-            parent = str(relation.get("parent_concept_id") or "")
-            if child == concept_id and parent in self.concepts:
-                relation_names.append(str(self.concepts[parent].get("canonical_name") or ""))
-            elif parent == concept_id and child in self.concepts:
-                relation_names.append(str(self.concepts[child].get("canonical_name") or ""))
-        return "\n".join(str(value) for value in [
-            row.get("canonical_name") or "", *(row.get("aliases") or []),
-            row.get("definition") or "", *(row.get("alignment_examples") or []), *relation_names,
-        ] if value)
-
-    def _concept_payload(
-        self,
-        concept_id: str,
-        concepts: dict[str, dict[str, Any]] | None = None,
-        *,
-        include_evidence: bool = False,
-    ) -> dict[str, Any]:
-        row = (concepts or self.concepts)[concept_id]
+        include_mechanical: bool,
+        max_tier: str = PackageTier.H3,
+    ) -> set[str]:
         result = {
-            "id": concept_id,
-            "name": str(row.get("canonical_name") or ""),
-            "aliases": list(row.get("aliases") or []),
-            "definition": row.get("definition"),
-            "examples": list(row.get("alignment_examples") or [])[:5],
+            str(case["object_id"])
+            for package in packages
+            for case in package["cases"]
         }
-        if include_evidence and not result["definition"]:
-            evidence = []
-            for unit_id in row.get("evidence_ids") or []:
-                unit = self.inputs.units.get(str(unit_id))
-                if unit and unit.get("content"):
-                    evidence.append(str(unit["content"]))
-                if len(evidence) >= 3:
-                    break
-            result["evidence"] = evidence
+        if include_mechanical:
+            result.update(
+                object_id for object_id, interpretation in self.mechanical_interpretations.items()
+                if TIER_ORDER[PackageTier(interpretation["tier"])] <= TIER_ORDER[PackageTier(max_tier)]
+            )
         return result
 
-    @staticmethod
-    def _chunk(package_type: str, rows: list[dict[str, Any]], size: int, key: str) -> list[dict[str, Any]]:
-        packages = []
-        for offset in range(0, len(rows), size):
-            payload = {"package_type": package_type, key: rows[offset:offset + size]}
-            payload["package_id"] = stable_id(package_type, payload)
-            packages.append(payload)
-        return packages
+    def package_report(self, packages: list[dict[str, Any]]) -> dict[str, Any]:
+        sizes = [len(json.dumps(package, ensure_ascii=False)) for package in packages]
+        return {
+            "mechanical_object_count": len(self.mechanical_interpretations),
+            "mechanical_object_count_by_tier": dict(Counter(
+                str(row["tier"]) for row in self.mechanical_interpretations.values()
+            )),
+            "llm_package_count": len(packages),
+            "llm_case_count": sum(len(package["cases"]) for package in packages),
+            "package_count_by_tier": dict(Counter(str(package["tier"]) for package in packages)),
+            "case_count_by_tier": dict(Counter(
+                str(package["tier"]) for package in packages for _case in package["cases"]
+            )),
+            "max_package_chars": max(sizes, default=0),
+            "average_package_chars": round(sum(sizes) / len(sizes), 2) if sizes else 0.0,
+        }
+
+    def _score_objects(self) -> list[dict[str, Any]]:
+        scored: list[dict[str, Any]] = []
+        for object_id, item in self.object_rows.items():
+            exact = self.registry.resolve_exact(item["name"], concept_type=ConceptType.OBJECT)
+            signals = sum(bool(pattern.search(item["name"])) for pattern in _STRUCTURE_PATTERNS)
+            coverage = self.registry.lexical_coverage(item["name"], concept_type=ConceptType.OBJECT)
+            if exact["status"] == AlignmentStatus.MATCHED and signals == 0:
+                tier = PackageTier.H0
+                confidence = 1.0
+                self.mechanical_interpretations[object_id] = {
+                    "object_id": object_id,
+                    "decision": "ATOMIC",
+                    "core_objects": [{
+                        "text": item["name"],
+                        "concept_id": exact["concept_id"],
+                        "match_method": exact["match_method"],
+                    }],
+                    "embedded_states": [],
+                    "qualifiers": [],
+                    "interpretation_method": "typed_exact",
+                    "tier": PackageTier.H0,
+                }
+            elif exact["status"] == AlignmentStatus.TYPE_REVIEW and signals == 0:
+                tier = PackageTier.H1
+                confidence = 0.82
+                self.mechanical_interpretations[object_id] = {
+                    "object_id": object_id,
+                    "decision": "ATOMIC",
+                    "core_objects": [{
+                        "text": item["name"],
+                        "concept_id": exact["concept_id"],
+                        "match_method": exact["match_method"],
+                    }],
+                    "embedded_states": [],
+                    "qualifiers": [],
+                    "interpretation_method": "untyped_exact",
+                    "tier": PackageTier.H1,
+                }
+            elif exact["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW} and signals <= 1:
+                tier = PackageTier.H1
+                confidence = 0.9 if exact["status"] == AlignmentStatus.MATCHED else 0.78
+            elif coverage >= 0.65 and signals <= 1:
+                tier = PackageTier.H1
+                confidence = round(0.65 + coverage * 0.25, 4)
+            elif exact["status"] == AlignmentStatus.AMBIGUOUS or coverage >= 0.3 or signals <= 1:
+                tier = PackageTier.H2
+                confidence = round(0.35 + min(coverage, 0.6) * 0.35 - signals * 0.03, 4)
+            else:
+                tier = PackageTier.H3
+                confidence = round(max(0.05, 0.25 + coverage * 0.25 - signals * 0.04), 4)
+            scored.append({
+                **item,
+                "tier": tier,
+                "confidence": confidence,
+                "lexical_coverage": coverage,
+                "structure_signal_count": signals,
+                "exact_resolution": exact,
+            })
+        return sorted(scored, key=lambda row: (
+            TIER_ORDER[PackageTier(row["tier"])], -float(row["confidence"]),
+            -int(row["frequency"]), row["object_id"],
+        ))
+
+    def _collect_sources(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        states: dict[str, dict[str, Any]] = {}
+        objects: dict[str, dict[str, Any]] = {}
+        object_names: dict[str, Counter[str]] = defaultdict(Counter)
+        object_states: dict[str, Counter[str]] = defaultdict(Counter)
+        object_contexts: dict[str, Counter[tuple[str, str]]] = defaultdict(Counter)
+        for rule in self.inputs.rules:
+            for role in ("conditions", "antecedents", "consequents"):
+                for state in rule.get(role) or []:
+                    self.source_occurrence_count += 1
+                    state_id = str(state.get("id") or "")
+                    raw_object = str(state.get("object") or "")
+                    raw_state = str(state.get("raw_state") or "")
+                    normalized_state = str(state.get("normalized_state") or "")
+                    if not state_id or not raw_object:
+                        raise ValueError(f"rule state requires id and object: {rule.get('id')}")
+                    object_id = stable_id("object", normalize_text(raw_object))
+                    existing = states.get(state_id)
+                    identity = (raw_object, raw_state, normalized_state)
+                    if existing and existing["identity"] != identity:
+                        raise ValueError(f"state_id has inconsistent identity: {state_id}")
+                    row = states.setdefault(state_id, {
+                        "source_state_id": state_id,
+                        "identity": identity,
+                        "object_id": object_id,
+                        "raw_object": raw_object,
+                        "raw_state": raw_state,
+                        "normalized_state": normalized_state,
+                        "frequency": 0,
+                        "rule_ids": set(),
+                        "context_package_ids": set(),
+                        "roles": set(),
+                        "contexts": [],
+                    })
+                    row["frequency"] += 1
+                    row["rule_ids"].add(str(rule.get("id") or ""))
+                    if rule.get("context_package_id"):
+                        row["context_package_ids"].add(str(rule["context_package_id"]))
+                    row["roles"].add(role[:-1] if role.endswith("s") else role)
+                    context = self._state_context(rule, role, state_id)
+                    if context not in row["contexts"] and len(row["contexts"]) < 3:
+                        row["contexts"].append(context)
+                    object_row = objects.setdefault(object_id, {
+                        "object_id": object_id,
+                        "object_key": normalize_text(raw_object),
+                        "frequency": 0,
+                        "source_state_ids": set(),
+                    })
+                    object_row["frequency"] += 1
+                    object_row["source_state_ids"].add(state_id)
+                    object_names[object_id][raw_object] += 1
+                    object_states[object_id][raw_state] += 1
+                    for counterpart in context["counterparts"][:2]:
+                        object_contexts[object_id][(
+                            str(rule.get("relation") or ""), counterpart,
+                        )] += 1
+        final_states: dict[str, dict[str, Any]] = {}
+        for state_id, row in states.items():
+            final_states[state_id] = {
+                **{key: value for key, value in row.items() if key != "identity"},
+                "rule_ids": sorted(value for value in row["rule_ids"] if value),
+                "context_package_ids": sorted(row["context_package_ids"]),
+                "roles": sorted(row["roles"]),
+            }
+        final_objects: dict[str, dict[str, Any]] = {}
+        for object_id, row in objects.items():
+            names = [value for value, _count in object_names[object_id].most_common()]
+            final_objects[object_id] = {
+                **row,
+                "source_state_ids": sorted(row["source_state_ids"]),
+                "name": names[0],
+                "raw_variants": names,
+                "state_examples": [
+                    {"raw_state": value, "frequency": count}
+                    for value, count in object_states[object_id].most_common(5)
+                    if value
+                ],
+                "contexts": [
+                    {"relation": relation, "counterpart": counterpart}
+                    for (relation, counterpart), _count in object_contexts[object_id].most_common(2)
+                ],
+            }
+        return final_states, final_objects
+
+    def _package_payload(self, tier: str, cases: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "package_type": "object_alignment",
+            "tier": tier,
+            "memory_version": self.memory.version,
+            "cases": cases,
+        }
+
+    def _finalize_package(self, tier: str, cases: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = self._package_payload(tier, cases)
+        payload["package_id"] = stable_id("object_alignment", payload)
+        return payload
 
     @staticmethod
     def _state_context(rule: dict[str, Any], role: str, state_id: str) -> dict[str, Any]:
@@ -624,3 +369,9 @@ class SemanticPackageBuilder:
             "counterparts": counterparts[:3],
             "raw_expression": rule.get("raw_expression"),
         }
+
+
+__all__ = [
+    "AlignmentInputs", "CharNgramIndex", "SemanticPackageBuilder", "load_alignment_inputs",
+    "normalize_text", "stable_id",
+]

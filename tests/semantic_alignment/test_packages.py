@@ -1,22 +1,38 @@
 from __future__ import annotations
 
-from constella.semantic_alignment.packages import AlignmentInputs, CharNgramIndex, SemanticPackageBuilder
+from constella.semantic_alignment import AlignmentInputs, MemorySnapshot, SemanticPackageBuilder
+from constella.semantic_alignment.models import PackageTier
+from constella.semantic_alignment.packages import CharNgramIndex
 
 
-def _inputs():
+def _inputs() -> AlignmentInputs:
     return AlignmentInputs(
         concepts=[
-            {"concept_id": "c1", "canonical_name": "GTAW", "aliases": ["TIG焊"], "definition": "钨极惰性气体保护焊"},
-            {"concept_id": "c2", "canonical_name": "TIGW", "aliases": ["钨极氩气保护焊"], "definition": "使用钨极和氩气的焊接方法"},
-            {"concept_id": "c3", "canonical_name": "焊接电流", "aliases": [], "definition": "焊接回路中的电流"},
+            {"concept_id": "current", "canonical_name": "焊接电流", "aliases": ["电流"], "type": "object"},
+            {"concept_id": "depth", "canonical_name": "熔深", "aliases": [], "type": "object"},
+            {"concept_id": "battery", "canonical_name": "电池组", "aliases": [], "type": "object"},
+            {"concept_id": "temperature", "canonical_name": "温度", "aliases": [], "type": "object"},
+            {"concept_id": "increase", "canonical_name": "增大", "aliases": ["提高"], "type": "state"},
+            {"concept_id": "charging", "canonical_name": "充电中", "aliases": ["正在充电"], "type": "state"},
         ],
         relations=[],
-        rules=[{
-            "id": "r1", "relation": "导致", "raw_expression": "提高电流导致熔深增大",
-            "conditions": [],
-            "antecedents": [{"id": "s1", "object": "电流", "raw_state": "提高", "normalized_state": "提高"}],
-            "consequents": [{"id": "s2", "object": "熔深", "raw_state": "增大", "normalized_state": "增大"}],
-        }],
+        rules=[
+            {
+                "id": "r1", "context_package_id": "p1", "relation": "导致",
+                "raw_expression": "电流|提高 —[导致]→ 熔深|增大", "conditions": [],
+                "antecedents": [{"id": "s1", "object": "电流", "raw_state": "提高", "normalized_state": "提高"}],
+                "consequents": [{"id": "s2", "object": "熔深", "raw_state": "增大", "normalized_state": "增大"}],
+            },
+            {
+                "id": "r2", "context_package_id": "p2", "relation": "要求",
+                "raw_expression": "温度超过60°C时充电中的电池组|安全检查", "conditions": [],
+                "antecedents": [{
+                    "id": "s3", "object": "温度超过60°C时充电中的电池组",
+                    "raw_state": "安全检查", "normalized_state": "安全检查",
+                }],
+                "consequents": [],
+            },
+        ],
         context_packages={},
         units={},
     )
@@ -27,91 +43,51 @@ def test_ngram_index_returns_related_document_first():
     assert index.query("电流增大", top_k=2)[0][0] == "a"
 
 
-def test_package_ids_are_stable_and_objects_are_deduplicated():
+def test_typed_exact_atomic_objects_bypass_llm():
     builder = SemanticPackageBuilder(_inputs())
-    first = builder.concept_merge_packages(candidates_per_anchor=2, anchors_per_package=2)
-    second = builder.concept_merge_packages(candidates_per_anchor=2, anchors_per_package=2)
-    assert [item["package_id"] for item in first] == [item["package_id"] for item in second]
-    assert len(builder.object_rows) == 2
-    assert sum(len(item["cases"]) for item in builder.object_alignment_packages(objects_per_package=1)) == 2
+    exact_ids = {
+        row["object_id"] for row in builder.object_rows.values()
+        if row["name"] in {"电流", "熔深"}
+    }
+    assert exact_ids <= set(builder.mechanical_interpretations)
+    assert all(row["decision"] == "ATOMIC" for row in builder.mechanical_interpretations.values())
 
 
-def test_state_packages_include_full_minimal_rule_context():
+def test_packages_are_tier_homogeneous_stable_and_size_bounded():
     builder = SemanticPackageBuilder(_inputs())
-    object_id = builder.object_rows["电流"]["object_id"]
-    packages = builder.state_normalization_packages({object_id: "c3"})
-    assert len(packages) == 1
-    state = packages[0]["states"][0]
-    assert state["id"] == "s1"
-    assert state["contexts"][0]["relation"] == "导致"
-    assert state["contexts"][0]["counterparts"] == ["熔深|增大"]
+    first = builder.object_alignment_packages(objects_per_package=2, max_package_chars=4_000)
+    second = builder.object_alignment_packages(objects_per_package=2, max_package_chars=4_000)
+    assert [row["package_id"] for row in first] == [row["package_id"] for row in second]
+    assert all(len({case["confidence"] >= 0 for case in package["cases"]}) == 1 for package in first)
+    assert all(package["tier"] in {PackageTier.H1, PackageTier.H2, PackageTier.H3} for package in first)
+    assert builder.package_report(first)["max_package_chars"] < 6_000
 
 
-def test_state_clustering_keeps_near_equivalent_thresholds_together():
-    states = [
-        {"id": "a", "text": "大于120A时", "current_normalized": ">120 A"},
-        {"id": "b", "text": "完全无关", "current_normalized": "完全无关"},
-        {"id": "c", "text": "比120A大", "current_normalized": ">120 A"},
-    ]
-    chunks = SemanticPackageBuilder._cluster_states(states, 2)
-    assert {item["id"] for item in chunks[0]} == {"a", "c"}
-
-
-def test_merge_review_deduplicates_proposed_pairs():
-    builder = SemanticPackageBuilder(_inputs())
-    results = [{"status": "success", "output": {"merge_groups": [["c1", "c2"], ["c2", "c1"]]}}]
-    packages = builder.concept_merge_review_packages(results)
-    assert len(packages) == 1
-    assert len(packages[0]["cases"]) == 1
-    assert {packages[0]["cases"][0][side]["id"] for side in ("left", "right")} == {"c1", "c2"}
-
-
-def test_object_and_concept_package_filters_select_only_requested_ids():
-    builder = SemanticPackageBuilder(_inputs())
-    concept_packages = builder.concept_merge_packages(anchor_ids={"c1"})
-    assert len(concept_packages) == 1
-    assert [case["anchor"]["id"] for case in concept_packages[0]["cases"]] == ["c1"]
-    object_id = builder.object_rows["电流"]["object_id"]
-    object_packages = builder.object_alignment_packages(object_ids={object_id})
-    assert len(object_packages) == 1
-    assert [case["object_id"] for case in object_packages[0]["cases"]] == [object_id]
-
-
-def test_state_object_packages_expand_reparse_object_to_state_cases():
-    builder = SemanticPackageBuilder(_inputs())
-    object_id = builder.object_rows["电流"]["object_id"]
-    packages = builder.state_object_alignment_packages({object_id})
-    assert len(packages) == 1
-    case = packages[0]["cases"][0]
-    assert case["state_id"] == "s1"
-    assert case["object_name"] == "电流"
-    assert case["state_text"] == "提高"
-
-
-def test_state_repair_packages_recall_candidates_for_composite_fragments():
+def test_source_states_preserve_object_context_and_frequency():
     inputs = _inputs()
-    inputs.concepts.extend([
-        {"concept_id": "oil", "canonical_name": "油污", "aliases": [], "definition": None},
-        {"concept_id": "rust", "canonical_name": "锈", "aliases": [], "definition": None},
-    ])
-    inputs.rules[0]["antecedents"][0].update({
-        "object": "焊件状态", "raw_state": "油污、锈", "normalized_state": "油污、锈",
+    inputs.rules.append({
+        **inputs.rules[0],
+        "id": "r3",
+        "context_package_id": "p3",
     })
     builder = SemanticPackageBuilder(inputs)
-    packages = builder.state_repair_packages([{
-        "state_id": "s1", "object_name": "焊件状态", "state_text": "油污、锈",
-        "decision": "UNRESOLVED", "frequency": 2,
+    assert len(builder.state_rows) == 3
+    assert builder.state_rows["s1"]["frequency"] == 2
+    assert builder.source_occurrence_count == 5
+    assert builder.state_rows["s1"]["raw_object"] == "电流"
+    assert builder.state_rows["s1"]["raw_state"] == "提高"
+
+
+def test_memory_version_changes_package_identity():
+    inputs = _inputs()
+    initial = MemorySnapshot.build(inputs.concepts, inputs.relations)
+    reviewed = MemorySnapshot.build(inputs.concepts, inputs.relations, [{
+        "status": "APPROVED",
+        "proposal_kind": "ALIAS",
+        "concept_id": "battery",
+        "alias": "蓄电池组",
     }])
-    names = {candidate["name"] for candidate in packages[0]["cases"][0]["candidates"]}
-    assert {"油污", "锈"} <= names
-
-
-def test_atomic_state_alignment_packages_expand_reparse_objects_without_prior_llm_results():
-    builder = SemanticPackageBuilder(_inputs())
-    object_id = builder.object_rows["电流"]["object_id"]
-    packages = builder.atomic_state_alignment_packages({object_id})
-    assert len(packages) == 1
-    case = packages[0]["cases"][0]
-    assert case["state_id"] == "s1"
-    assert case["object_name"] == "电流"
-    assert case["previous_decision"] == "UNRESOLVED"
+    initial_packages = SemanticPackageBuilder(inputs, memory=initial).object_alignment_packages()
+    reviewed_packages = SemanticPackageBuilder(inputs, memory=reviewed).object_alignment_packages()
+    assert initial.version != reviewed.version
+    assert [row["package_id"] for row in initial_packages] != [row["package_id"] for row in reviewed_packages]
