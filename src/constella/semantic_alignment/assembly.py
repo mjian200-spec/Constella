@@ -232,6 +232,29 @@ def assemble_states(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
     return normalized, report
 
 
+def assemble_singleton_states(packages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize one-state concepts mechanically; no synonym decision is possible."""
+    rows: list[dict[str, Any]] = []
+    for package in packages:
+        states = package.get("states") or []
+        if len(states) != 1:
+            continue
+        state = states[0]
+        concept_id = str(package["concept"]["id"])
+        canonical = str(state.get("current_normalized") or state.get("text") or "").strip()
+        rows.append({
+            "state_id": state["id"],
+            "concept_id": concept_id,
+            "canonical_state_id": stable_id("canonical_state", {
+                "concept_id": concept_id, "canonical": normalize_text(canonical),
+            }),
+            "canonical_state": canonical,
+            "status": "normalized",
+            "normalization_method": "singleton_passthrough",
+        })
+    return rows
+
+
 def assemble_state_object_alignments(
     results: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:

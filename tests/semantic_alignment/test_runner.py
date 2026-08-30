@@ -107,6 +107,26 @@ def test_concept_review_only_accepts_proposed_pairs():
     assert report["decision_coverage_rate"] == 1.0
 
 
+def test_concept_merge_normalizes_overlapping_groups_to_one_component():
+    package = {
+        "package_id": "p1", "package_type": "concept_merge",
+        "cases": [{
+            "anchor": {"id": "c1"},
+            "candidates": [{"id": "c2"}, {"id": "c3"}],
+        }],
+    }
+    client = FakeClient({"merge_groups": [["c1", "c2"], ["c1", "c3"]]})
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, report = runner.run([package])
+    assert results[0]["status"] == "success"
+    assert results[0]["output"]["merge_groups"] == [["c1", "c2", "c3"]]
+    assert report["protocol_success_rate"] == 1.0
+
+
 def test_state_canonical_without_concept_name_is_quality_warning_not_protocol_failure():
     package = {
         "package_id": "p1", "package_type": "state_normalization",

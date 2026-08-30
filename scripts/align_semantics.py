@@ -20,6 +20,7 @@ from constella.semantic_alignment import (
     assemble_object_alignments,
     assemble_state_object_alignments,
     assemble_state_repairs,
+    assemble_singleton_states,
     assemble_states,
     load_alignment_inputs,
     remap_alignment_concepts,
@@ -138,11 +139,14 @@ def main() -> int:
         write_jsonl(output_dir / "concepts_aligned.jsonl", concepts)
         reports["object"] = {**run_report, **assembly_report}
     elif args.stage in {"refine", "rule-align", "state-reparse", "state-repair", "state"}:
+        final_concepts = output_dir / "final_concepts.jsonl"
         rule_aligned_concepts = output_dir / "concepts_rule_aligned.jsonl"
         repaired_concepts = output_dir / "concepts_state_repaired.jsonl"
         refined_concepts = output_dir / "concepts_refined.jsonl"
         concept_path = refined_concepts
-        if args.stage == "state" and rule_aligned_concepts.is_file():
+        if args.stage == "state" and final_concepts.is_file():
+            concept_path = final_concepts
+        elif args.stage == "state" and rule_aligned_concepts.is_file():
             concept_path = rule_aligned_concepts
         elif args.stage == "state" and repaired_concepts.is_file():
             concept_path = repaired_concepts
@@ -380,12 +384,19 @@ def main() -> int:
 
     if args.stage in {"state", "all"}:
         if args.stage == "state":
+            final_alignments = output_dir / "final_object_alignments.jsonl"
             refined_alignments = output_dir / "object_alignments_refined.jsonl"
             alignments = _read_jsonl(
-                refined_alignments if refined_alignments.is_file() else output_dir / "object_alignments.jsonl"
+                final_alignments if final_alignments.is_file()
+                else refined_alignments if refined_alignments.is_file()
+                else output_dir / "object_alignments.jsonl"
             )
         alignment_map = {row["object_id"]: row["concept_id"] for row in alignments}
-        atomic_state_path = output_dir / "atomic_state_alignments.jsonl"
+        final_state_path = output_dir / "final_state_alignments.jsonl"
+        atomic_state_path = (
+            final_state_path if final_state_path.is_file()
+            else output_dir / "atomic_state_alignments.jsonl"
+        )
         state_alignment_path = output_dir / "state_object_alignments.jsonl"
         state_alignment_map = {}
         if not atomic_state_path.is_file() and state_alignment_path.is_file():
@@ -398,11 +409,30 @@ def main() -> int:
         state_packages = builder.state_normalization_packages(
             alignment_map, concepts, state_alignments=state_alignment_map, repaired_states=repaired_states,
         )
-        results, run_report = runner.run(state_packages, limit=args.state_limit, refresh=args.refresh)
-        _enrich_results(results, state_packages)
+        singleton_packages = [package for package in state_packages if len(package["states"]) == 1]
+        llm_state_packages = [package for package in state_packages if len(package["states"]) > 1]
+        selected_packages = (
+            llm_state_packages[:args.state_limit] if args.state_limit is not None else llm_state_packages
+        )
+        results, run_report = runner.run(
+            llm_state_packages, limit=args.state_limit, refresh=args.refresh,
+        )
+        _enrich_results(results, selected_packages)
         states, assembly_report = assemble_states(results)
-        write_jsonl(output_dir / "normalized_states.jsonl", states)
-        reports["state"] = {**run_report, **assembly_report, "generated_package_count": len(state_packages)}
+        mechanical_states = [] if args.state_limit is not None else assemble_singleton_states(singleton_packages)
+        states.extend(mechanical_states)
+        is_trial = args.state_limit is not None
+        suffix = "_trial" if is_trial else ""
+        write_jsonl(output_dir / f"normalized_states{suffix}.jsonl", states)
+        report_key = "state_trial" if is_trial else "state"
+        reports[report_key] = {
+            **run_report,
+            **assembly_report,
+            "generated_package_count": len(state_packages),
+            "llm_package_count": len(llm_state_packages),
+            "singleton_passthrough_count": len(mechanical_states),
+            "processed_package_count": len(results),
+        }
 
     write_json(report_path, reports)
     print(json.dumps(reports, ensure_ascii=False, indent=2))

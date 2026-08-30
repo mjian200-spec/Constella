@@ -5,6 +5,7 @@ from constella.semantic_alignment.assembly import (
     assemble_concepts,
     assemble_state_object_alignments,
     assemble_state_repairs,
+    assemble_singleton_states,
     remap_alignment_concepts,
 )
 
@@ -66,3 +67,13 @@ def test_remap_alignment_concepts_marks_finalized_new_alignment():
     assert rows[0]["decision"] == "ALIGNED"
     assert rows[0]["source_decision"] == "NEW"
     assert rows[1] == {"concept_id": "INVALID", "decision": "INVALID"}
+
+
+def test_singleton_state_is_normalized_without_llm():
+    rows = assemble_singleton_states([{
+        "concept": {"id": "c1"},
+        "states": [{"id": "s1", "text": "较高", "current_normalized": "温度较高"}],
+    }])
+    assert len(rows) == 1
+    assert rows[0]["canonical_state"] == "温度较高"
+    assert rows[0]["normalization_method"] == "singleton_passthrough"

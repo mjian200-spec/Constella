@@ -183,7 +183,27 @@ class SemanticAlignmentRunner:
 
     @staticmethod
     def _normalize_output(package: dict[str, Any], value: Any) -> Any:
-        if package.get("package_type") != "state_repair" or not isinstance(value, dict):
+        if not isinstance(value, dict):
+            return value
+        if package.get("package_type") == "concept_merge":
+            groups = value.get("merge_groups")
+            if not isinstance(groups, list):
+                return value
+            components: list[set[str]] = []
+            for group in groups:
+                if not isinstance(group, list) or not all(isinstance(item, str) for item in group):
+                    continue
+                merged = set(group)
+                untouched: list[set[str]] = []
+                for component in components:
+                    if component & merged:
+                        merged.update(component)
+                    else:
+                        untouched.append(component)
+                components = [*untouched, merged]
+            value["merge_groups"] = [sorted(component) for component in components if len(component) >= 2]
+            return value
+        if package.get("package_type") != "state_repair":
             return value
         repairs = value.get("repairs")
         if not isinstance(repairs, list):
