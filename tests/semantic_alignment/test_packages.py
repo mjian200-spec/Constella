@@ -104,3 +104,14 @@ def test_state_repair_packages_recall_candidates_for_composite_fragments():
     }])
     names = {candidate["name"] for candidate in packages[0]["cases"][0]["candidates"]}
     assert {"油污", "锈"} <= names
+
+
+def test_atomic_state_alignment_packages_expand_reparse_objects_without_prior_llm_results():
+    builder = SemanticPackageBuilder(_inputs())
+    object_id = builder.object_rows["电流"]["object_id"]
+    packages = builder.atomic_state_alignment_packages({object_id})
+    assert len(packages) == 1
+    case = packages[0]["cases"][0]
+    assert case["state_id"] == "s1"
+    assert case["object_name"] == "电流"
+    assert case["previous_decision"] == "UNRESOLVED"

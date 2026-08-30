@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Verified production-oriented configuration from
 # docs/qwen38_27b_inference_benchmark_20260830.md.
-exec conda run -n vllm19 --no-capture-output \
+exec conda run -p /ENV/Anaconda/envs/jm/vllm19 --no-capture-output \
   vllm serve /DATA/jm/llms/qwen3.8-27b \
   --served-model-name /DATA/jm/llms/qwen3.8-27b \
   --host 127.0.0.1 \

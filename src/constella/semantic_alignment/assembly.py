@@ -355,6 +355,24 @@ def assemble_state_repairs(
     return rows, [*concepts, *new_concepts.values()], report
 
 
+def remap_alignment_concepts(
+    rows: list[dict[str, Any]],
+    id_map: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Apply a concept-fusion ID map without losing the original alignment decision."""
+    remapped: list[dict[str, Any]] = []
+    for source in rows:
+        row = dict(source)
+        concept_id = str(row.get("concept_id") or "")
+        if concept_id in id_map:
+            row["concept_id"] = id_map[concept_id]
+            if row.get("decision") == "NEW":
+                row["source_decision"] = "NEW"
+                row["decision"] = "ALIGNED"
+        remapped.append(row)
+    return remapped
+
+
 def write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

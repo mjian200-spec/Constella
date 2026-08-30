@@ -22,6 +22,7 @@ from constella.semantic_alignment import (
     assemble_state_repairs,
     assemble_states,
     load_alignment_inputs,
+    remap_alignment_concepts,
 )
 from constella.semantic_alignment.assembly import write_json, write_jsonl
 
@@ -52,13 +53,14 @@ def main() -> int:
     parser.add_argument("--model-key", default="qwen3_8_27b")
     parser.add_argument(
         "--stage", choices=(
-            "concept", "object", "refine", "state-reparse", "state-repair", "state", "all",
+            "concept", "object", "refine", "rule-align", "state-reparse", "state-repair", "state", "all",
         ), default="all",
     )
     parser.add_argument("--concept-limit", type=int)
     parser.add_argument("--object-limit", type=int)
     parser.add_argument("--state-reparse-limit", type=int)
     parser.add_argument("--state-repair-limit", type=int)
+    parser.add_argument("--rule-limit", type=int)
     parser.add_argument("--state-limit", type=int)
     parser.add_argument("--refine-iterations", type=int, default=2)
     parser.add_argument("--workers", type=int)
@@ -135,10 +137,15 @@ def main() -> int:
         write_jsonl(output_dir / "object_alignments.jsonl", alignments)
         write_jsonl(output_dir / "concepts_aligned.jsonl", concepts)
         reports["object"] = {**run_report, **assembly_report}
-    elif args.stage in {"refine", "state-reparse", "state-repair", "state"}:
+    elif args.stage in {"refine", "rule-align", "state-reparse", "state-repair", "state"}:
+        rule_aligned_concepts = output_dir / "concepts_rule_aligned.jsonl"
         repaired_concepts = output_dir / "concepts_state_repaired.jsonl"
         refined_concepts = output_dir / "concepts_refined.jsonl"
-        concept_path = repaired_concepts if args.stage == "state" and repaired_concepts.is_file() else refined_concepts
+        concept_path = refined_concepts
+        if args.stage == "state" and rule_aligned_concepts.is_file():
+            concept_path = rule_aligned_concepts
+        elif args.stage == "state" and repaired_concepts.is_file():
+            concept_path = repaired_concepts
         concepts = _read_jsonl(concept_path if concept_path.is_file() else output_dir / "concepts_aligned.jsonl")
 
     if args.stage in {"refine", "all"}:
@@ -247,12 +254,11 @@ def main() -> int:
                 break
         reports["refine"] = {"iterations": iteration_reports}
 
-    if args.stage in {"state-reparse", "all"}:
-        if args.stage == "state-reparse":
-            refined_alignments = output_dir / "object_alignments_refined.jsonl"
-            alignments = _read_jsonl(
-                refined_alignments if refined_alignments.is_file() else output_dir / "object_alignments.jsonl"
-            )
+    if args.stage == "state-reparse":
+        refined_alignments = output_dir / "object_alignments_refined.jsonl"
+        alignments = _read_jsonl(
+            refined_alignments if refined_alignments.is_file() else output_dir / "object_alignments.jsonl"
+        )
         reparse_ids = {row["object_id"] for row in alignments if row.get("decision") == "REPARSE"}
         state_object_packages = builder.state_object_alignment_packages(reparse_ids, concepts)
         results, run_report = runner.run(
@@ -271,9 +277,8 @@ def main() -> int:
             "generated_package_count": len(state_object_packages),
         }
 
-    if args.stage in {"state-repair", "all"}:
-        if args.stage == "state-repair":
-            state_alignments = _read_jsonl(output_dir / "state_object_alignments.jsonl")
+    if args.stage == "state-repair":
+        state_alignments = _read_jsonl(output_dir / "state_object_alignments.jsonl")
         repair_packages = builder.state_repair_packages(state_alignments, concepts)
         repair_results, repair_run_report = runner.run(
             repair_packages, limit=args.state_repair_limit, refresh=args.refresh,
@@ -293,6 +298,86 @@ def main() -> int:
             "generated_package_count": len(repair_packages),
         }
 
+    if args.stage in {"rule-align", "all"}:
+        if args.stage == "rule-align":
+            refined_alignments = output_dir / "object_alignments_refined.jsonl"
+            alignments = _read_jsonl(
+                refined_alignments if refined_alignments.is_file() else output_dir / "object_alignments.jsonl"
+            )
+            refined_relations = output_dir / "concept_relations_refined.jsonl"
+            relations = _read_jsonl(
+                refined_relations if refined_relations.is_file() else output_dir / "concept_relations_merged.jsonl"
+            )
+        reparse_ids = {row["object_id"] for row in alignments if row.get("decision") == "REPARSE"}
+        atomic_packages = builder.atomic_state_alignment_packages(reparse_ids, concepts)
+        atomic_results, atomic_run_report = runner.run(
+            atomic_packages, limit=args.rule_limit, refresh=args.refresh,
+        )
+        by_package = {package["package_id"]: package for package in atomic_packages}
+        for result in atomic_results:
+            package = by_package[result["package_id"]]
+            result["_package"] = {case["state_id"]: case for case in package["cases"]}
+        atomic_states, concepts, atomic_assembly_report = assemble_state_repairs(
+            atomic_results, concepts,
+        )
+        is_trial = args.rule_limit is not None
+        suffix = "_trial" if is_trial else ""
+        write_jsonl(output_dir / f"atomic_state_alignments{suffix}.jsonl", atomic_states)
+        write_jsonl(output_dir / f"concepts_rule_aligned{suffix}.jsonl", concepts)
+        report_key = "rule_alignment_trial" if is_trial else "rule_alignment"
+        reports[report_key] = {
+            **atomic_run_report,
+            **atomic_assembly_report,
+            "source_reparse_object_count": len(reparse_ids),
+            "generated_package_count": len(atomic_packages),
+            "processed_package_count": len(atomic_results),
+        }
+
+        # A limited run is only a quality gate. Formal runs feed every concept
+        # created from rule states back through the same reviewed fusion stage.
+        if not is_trial:
+            expanded_inputs = AlignmentInputs(
+                concepts=concepts,
+                relations=relations,
+                rules=inputs.rules,
+                context_packages=inputs.context_packages,
+                units=inputs.units,
+            )
+            expanded_builder = SemanticPackageBuilder(expanded_inputs)
+            new_ids = {
+                str(row["concept_id"]) for row in concepts
+                if row.get("audit_status") == "state_repair_created" and not row.get("source_concept_ids")
+            }
+            fusion_packages = expanded_builder.concept_merge_packages(anchor_ids=new_ids)
+            fusion_proposals, fusion_proposal_report = runner.run(fusion_packages, refresh=args.refresh)
+            fusion_review_packages = expanded_builder.concept_merge_review_packages(fusion_proposals)
+            fusion_reviews, fusion_review_report = runner.run(fusion_review_packages, refresh=args.refresh)
+            concepts, relations, id_map, fusion_assembly_report = assemble_concepts(
+                expanded_inputs, fusion_reviews,
+            )
+            atomic_states = remap_alignment_concepts(atomic_states, id_map)
+            alignments = remap_alignment_concepts(alignments, id_map)
+            proposed_pair_count = sum(len(package["cases"]) for package in fusion_review_packages)
+            accepted_pair_count = sum(
+                len(result["output"].get("merge_pairs", []))
+                for result in fusion_reviews if result.get("status") == "success"
+            )
+            write_jsonl(output_dir / "final_concepts.jsonl", concepts)
+            write_jsonl(output_dir / "final_concept_relations.jsonl", relations)
+            write_jsonl(output_dir / "final_object_alignments.jsonl", alignments)
+            write_jsonl(output_dir / "final_state_alignments.jsonl", atomic_states)
+            write_json(output_dir / "final_concept_id_map.json", id_map)
+            reports["rule_concept_fusion"] = {
+                "new_concept_anchor_count": len(new_ids),
+                "proposal": fusion_proposal_report,
+                "review": fusion_review_report,
+                "proposed_pair_count": proposed_pair_count,
+                "accepted_pair_count": accepted_pair_count,
+                "proposal_acceptance_rate": round(accepted_pair_count / proposed_pair_count, 4)
+                if proposed_pair_count else 1.0,
+                **fusion_assembly_report,
+            }
+
     if args.stage in {"state", "all"}:
         if args.stage == "state":
             refined_alignments = output_dir / "object_alignments_refined.jsonl"
@@ -300,14 +385,15 @@ def main() -> int:
                 refined_alignments if refined_alignments.is_file() else output_dir / "object_alignments.jsonl"
             )
         alignment_map = {row["object_id"]: row["concept_id"] for row in alignments}
+        atomic_state_path = output_dir / "atomic_state_alignments.jsonl"
         state_alignment_path = output_dir / "state_object_alignments.jsonl"
         state_alignment_map = {}
-        if state_alignment_path.is_file():
+        if not atomic_state_path.is_file() and state_alignment_path.is_file():
             state_alignment_map = {
                 row["state_id"]: row["concept_id"] for row in _read_jsonl(state_alignment_path)
                 if row.get("decision") == "ALIGNED"
             }
-        state_repair_path = output_dir / "state_repairs.jsonl"
+        state_repair_path = atomic_state_path if atomic_state_path.is_file() else output_dir / "state_repairs.jsonl"
         repaired_states = _read_jsonl(state_repair_path) if state_repair_path.is_file() else []
         state_packages = builder.state_normalization_packages(
             alignment_map, concepts, state_alignments=state_alignment_map, repaired_states=repaired_states,

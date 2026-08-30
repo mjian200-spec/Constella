@@ -464,6 +464,40 @@ class SemanticPackageBuilder:
         cases.sort(key=lambda row: (-int(row["frequency"]), row["state_id"]))
         return self._chunk("state_repair", cases, states_per_package, "cases")
 
+    def atomic_state_alignment_packages(
+        self,
+        reparse_object_ids: set[str],
+        concepts: list[dict[str, Any]] | None = None,
+        *,
+        candidates_per_state: int = 12,
+        states_per_package: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Build one-pass atomic alignment packages for all states of REPARSE objects."""
+        object_id_by_key = {key: item["object_id"] for key, item in self.object_rows.items()}
+        seeds: dict[str, dict[str, Any]] = {}
+        for rule in self.inputs.rules:
+            for role in ("conditions", "antecedents", "consequents"):
+                for state in rule.get(role) or []:
+                    object_name = str(state.get("object") or "")
+                    object_id = object_id_by_key.get(normalize_text(object_name))
+                    if object_id not in reparse_object_ids:
+                        continue
+                    state_id = str(state.get("id") or "")
+                    row = seeds.setdefault(state_id, {
+                        "state_id": state_id,
+                        "source_object_id": object_id,
+                        "object_name": object_name,
+                        "state_text": str(state.get("raw_state") or ""),
+                        "decision": "UNRESOLVED",
+                        "frequency": 0,
+                    })
+                    row["frequency"] += 1
+        return self.state_repair_packages(
+            list(seeds.values()), concepts,
+            candidates_per_state=candidates_per_state,
+            states_per_package=states_per_package,
+        )
+
     @staticmethod
     def _cluster_states(states: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
         if not states:

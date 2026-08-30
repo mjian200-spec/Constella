@@ -5,6 +5,7 @@ from constella.semantic_alignment.assembly import (
     assemble_concepts,
     assemble_state_object_alignments,
     assemble_state_repairs,
+    remap_alignment_concepts,
 )
 
 
@@ -54,3 +55,14 @@ def test_state_repair_assembly_creates_derived_states_and_new_concepts():
     assert all(row["derived_state_id"] for row in states)
     assert report["repaired_source_count"] == 1
     assert report["new_concept_count"] == 1
+
+
+def test_remap_alignment_concepts_marks_finalized_new_alignment():
+    rows = remap_alignment_concepts([
+        {"concept_id": "new", "decision": "NEW", "state_text": "含量较多"},
+        {"concept_id": "INVALID", "decision": "INVALID"},
+    ], {"new": "canonical"})
+    assert rows[0]["concept_id"] == "canonical"
+    assert rows[0]["decision"] == "ALIGNED"
+    assert rows[0]["source_decision"] == "NEW"
+    assert rows[1] == {"concept_id": "INVALID", "decision": "INVALID"}
