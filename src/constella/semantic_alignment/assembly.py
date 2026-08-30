@@ -268,6 +268,93 @@ def assemble_state_object_alignments(
     return rows, report
 
 
+def assemble_state_repairs(
+    results: list[dict[str, Any]],
+    concepts: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    new_concepts: dict[str, dict[str, Any]] = {}
+    source_decisions: Counter[str] = Counter()
+    source_weights: Counter[str] = Counter()
+    for result in results:
+        if result.get("status") != "success":
+            continue
+        cases = result.get("_package") or {}
+        output = result["output"]
+        for terminal, decision in (("UNRESOLVED", "UNRESOLVED"), ("INVALID", "INVALID")):
+            for state_id in output.get(f"{terminal.lower()}_ids", []):
+                case = cases.get(state_id, {})
+                frequency = int(case.get("frequency") or 0)
+                source_decisions[decision] += 1
+                source_weights[decision] += frequency
+                rows.append({
+                    "source_state_id": state_id,
+                    "derived_state_id": None,
+                    "concept_id": decision,
+                    "object_name": case.get("object_name"),
+                    "state_text": case.get("state_text"),
+                    "frequency": frequency,
+                    "decision": decision,
+                    "contexts": list(case.get("contexts") or []),
+                })
+        for repair in output.get("repairs", []):
+            state_id = repair["state_id"]
+            case = cases.get(state_id, {})
+            frequency = int(case.get("frequency") or 0)
+            source_decisions["REPAIRED"] += 1
+            source_weights["REPAIRED"] += frequency
+            for part in repair["parts"]:
+                object_name = str(part["object_name"]).strip()
+                state_text = str(part["state_text"]).strip()
+                concept_id = part["concept_id"]
+                decision = "ALIGNED"
+                if concept_id == "NEW":
+                    concept_id = stable_id("concept", {"state_repair": normalize_text(object_name)})
+                    decision = "NEW"
+                    new_concepts.setdefault(concept_id, {
+                        "concept_id": concept_id,
+                        "canonical_name": object_name,
+                        "aliases": [],
+                        "definition": None,
+                        "definition_type": None,
+                        "source_package_ids": [],
+                        "evidence_ids": [],
+                        "audit_status": "state_repair_created",
+                        "origin_depth": 0,
+                        "source_concept_ids": [],
+                        "alignment_examples": [state_text],
+                    })
+                derived_id = stable_id("derived_state", {
+                    "source_state_id": state_id,
+                    "concept_id": concept_id,
+                    "object_name": normalize_text(object_name),
+                    "state_text": normalize_text(state_text),
+                })
+                rows.append({
+                    "source_state_id": state_id,
+                    "derived_state_id": derived_id,
+                    "concept_id": concept_id,
+                    "object_name": object_name,
+                    "state_text": state_text,
+                    "frequency": frequency,
+                    "decision": decision,
+                    "contexts": list(case.get("contexts") or []),
+                })
+    total_sources = sum(source_decisions.values())
+    total_weight = sum(source_weights.values())
+    report = {
+        "source_state_count": total_sources,
+        "repaired_source_count": source_decisions["REPAIRED"],
+        "remaining_unresolved_count": source_decisions["UNRESOLVED"],
+        "invalid_count": source_decisions["INVALID"],
+        "derived_state_count": sum(row.get("derived_state_id") is not None for row in rows),
+        "new_concept_count": len(new_concepts),
+        "repair_rate": round(source_decisions["REPAIRED"] / total_sources, 4) if total_sources else 0.0,
+        "weighted_repair_rate": round(source_weights["REPAIRED"] / total_weight, 4) if total_weight else 0.0,
+    }
+    return rows, [*concepts, *new_concepts.values()], report
+
+
 def write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

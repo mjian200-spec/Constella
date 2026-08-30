@@ -19,6 +19,7 @@ from constella.semantic_alignment import (
     assemble_concepts,
     assemble_object_alignments,
     assemble_state_object_alignments,
+    assemble_state_repairs,
     assemble_states,
     load_alignment_inputs,
 )
@@ -50,11 +51,14 @@ def main() -> int:
     parser.add_argument("--config-dir", default=str(ROOT / "configs" / "concept_layer"))
     parser.add_argument("--model-key", default="qwen3_8_27b")
     parser.add_argument(
-        "--stage", choices=("concept", "object", "refine", "state-reparse", "state", "all"), default="all",
+        "--stage", choices=(
+            "concept", "object", "refine", "state-reparse", "state-repair", "state", "all",
+        ), default="all",
     )
     parser.add_argument("--concept-limit", type=int)
     parser.add_argument("--object-limit", type=int)
     parser.add_argument("--state-reparse-limit", type=int)
+    parser.add_argument("--state-repair-limit", type=int)
     parser.add_argument("--state-limit", type=int)
     parser.add_argument("--refine-iterations", type=int, default=2)
     parser.add_argument("--workers", type=int)
@@ -131,9 +135,11 @@ def main() -> int:
         write_jsonl(output_dir / "object_alignments.jsonl", alignments)
         write_jsonl(output_dir / "concepts_aligned.jsonl", concepts)
         reports["object"] = {**run_report, **assembly_report}
-    elif args.stage in {"refine", "state-reparse", "state"}:
+    elif args.stage in {"refine", "state-reparse", "state-repair", "state"}:
+        repaired_concepts = output_dir / "concepts_state_repaired.jsonl"
         refined_concepts = output_dir / "concepts_refined.jsonl"
-        concepts = _read_jsonl(refined_concepts if refined_concepts.is_file() else output_dir / "concepts_aligned.jsonl")
+        concept_path = repaired_concepts if args.stage == "state" and repaired_concepts.is_file() else refined_concepts
+        concepts = _read_jsonl(concept_path if concept_path.is_file() else output_dir / "concepts_aligned.jsonl")
 
     if args.stage in {"refine", "all"}:
         if args.stage == "refine":
@@ -265,6 +271,28 @@ def main() -> int:
             "generated_package_count": len(state_object_packages),
         }
 
+    if args.stage in {"state-repair", "all"}:
+        if args.stage == "state-repair":
+            state_alignments = _read_jsonl(output_dir / "state_object_alignments.jsonl")
+        repair_packages = builder.state_repair_packages(state_alignments, concepts)
+        repair_results, repair_run_report = runner.run(
+            repair_packages, limit=args.state_repair_limit, refresh=args.refresh,
+        )
+        by_package = {package["package_id"]: package for package in repair_packages}
+        for result in repair_results:
+            package = by_package[result["package_id"]]
+            result["_package"] = {case["state_id"]: case for case in package["cases"]}
+        repaired_states, concepts, repair_assembly_report = assemble_state_repairs(
+            repair_results, concepts,
+        )
+        write_jsonl(output_dir / "state_repairs.jsonl", repaired_states)
+        write_jsonl(output_dir / "concepts_state_repaired.jsonl", concepts)
+        reports["state_repair"] = {
+            **repair_run_report,
+            **repair_assembly_report,
+            "generated_package_count": len(repair_packages),
+        }
+
     if args.stage in {"state", "all"}:
         if args.stage == "state":
             refined_alignments = output_dir / "object_alignments_refined.jsonl"
@@ -279,8 +307,10 @@ def main() -> int:
                 row["state_id"]: row["concept_id"] for row in _read_jsonl(state_alignment_path)
                 if row.get("decision") == "ALIGNED"
             }
+        state_repair_path = output_dir / "state_repairs.jsonl"
+        repaired_states = _read_jsonl(state_repair_path) if state_repair_path.is_file() else []
         state_packages = builder.state_normalization_packages(
-            alignment_map, concepts, state_alignments=state_alignment_map,
+            alignment_map, concepts, state_alignments=state_alignment_map, repaired_states=repaired_states,
         )
         results, run_report = runner.run(state_packages, limit=args.state_limit, refresh=args.refresh)
         _enrich_results(results, state_packages)

@@ -18,6 +18,7 @@ PROMPT_FILES = {
     "concept_merge_review": "concept_merge_review_v1.yaml",
     "object_alignment": "object_alignment_v1.yaml",
     "state_object_alignment": "state_object_alignment_v1.yaml",
+    "state_repair": "state_repair_v1.yaml",
     "state_normalization": "state_normalization_v1.yaml",
 }
 
@@ -204,6 +205,8 @@ class SemanticAlignmentRunner:
             return self._validate_object_alignment(package, value)
         if package_type == "state_object_alignment":
             return self._validate_state_object_alignment(package, value)
+        if package_type == "state_repair":
+            return self._validate_state_repair(package, value)
         if package_type == "state_normalization":
             return self._validate_state_normalization(package, value)
         raise ValueError(f"Unsupported package type: {package_type}")
@@ -279,6 +282,41 @@ class SemanticAlignmentRunner:
         allowed = package_concept_ids | {"INVALID", "UNRESOLVED"}
         if any(row.get("concept_id") not in allowed for row in rows):
             raise ValueError("concept_id must be a package candidate, INVALID, or UNRESOLVED")
+        return len(cases)
+
+    @staticmethod
+    def _validate_state_repair(package: dict[str, Any], value: dict[str, Any]) -> int:
+        decisions = value.get("repairs")
+        unresolved = value.get("unresolved_ids")
+        invalid = value.get("invalid_ids")
+        if not all(isinstance(rows, list) for rows in (decisions, unresolved, invalid)):
+            raise ValueError("repairs, unresolved_ids, and invalid_ids must be lists")
+        cases = {item["state_id"]: item for item in package["cases"]}
+        repaired_ids = [row.get("state_id") for row in decisions]
+        covered = [*repaired_ids, *unresolved, *invalid]
+        if len(covered) != len(set(covered)) or set(covered) != set(cases):
+            raise ValueError("repair output must cover every state exactly once")
+        allowed = {
+            candidate["id"] for case in package["cases"] for candidate in case["candidates"]
+        } | {"NEW"}
+        for decision in decisions:
+            parts = decision.get("parts")
+            if not isinstance(parts, list) or not 1 <= len(parts) <= 8:
+                raise ValueError("every repair requires between one and eight atomic parts")
+            seen_parts: set[tuple[str, str, str]] = set()
+            for part in parts:
+                if part.get("concept_id") not in allowed:
+                    raise ValueError("repair concept_id must be a package candidate or NEW")
+                object_name = part.get("object_name")
+                state_text = part.get("state_text")
+                if not isinstance(object_name, str) or not object_name.strip():
+                    raise ValueError("every repair part requires object_name")
+                if not isinstance(state_text, str) or not state_text.strip():
+                    raise ValueError("every repair part requires state_text")
+                key = (part["concept_id"], object_name.strip(), state_text.strip())
+                if key in seen_parts:
+                    raise ValueError("duplicate repair part")
+                seen_parts.add(key)
         return len(cases)
 
     @staticmethod

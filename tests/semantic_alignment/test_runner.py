@@ -155,3 +155,27 @@ def test_runner_records_unhandled_package_failure_without_aborting_report():
     assert results[0]["errors"][0].startswith("unhandled:KeyError:")
     assert report["failed_count"] == 1
     assert report["protocol_success_rate"] == 0.0
+
+
+def test_state_repair_accepts_multiple_atomic_parts():
+    package = {
+        "package_id": "p1", "package_type": "state_repair",
+        "cases": [{
+            "state_id": "s1", "candidates": [{"id": "oil"}, {"id": "rust"}],
+        }],
+    }
+    client = FakeClient({
+        "repairs": [{"state_id": "s1", "parts": [
+            {"concept_id": "oil", "object_name": "油污", "state_text": "含量较多"},
+            {"concept_id": "rust", "object_name": "锈", "state_text": "含量较多"},
+        ]}],
+        "unresolved_ids": [], "invalid_ids": [],
+    })
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, report = runner.run([package])
+    assert results[0]["status"] == "success"
+    assert report["decision_coverage_rate"] == 1.0

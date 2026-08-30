@@ -231,6 +231,7 @@ class SemanticPackageBuilder:
         *,
         states_per_package: int = 20,
         state_alignments: dict[str, str] | None = None,
+        repaired_states: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
         object_to_concept = {
@@ -258,6 +259,18 @@ class SemanticPackageBuilder:
                     context = self._state_context(rule, role, state_id)
                     if context not in record["contexts"] and len(record["contexts"]) < 2:
                         record["contexts"].append(context)
+        for state in repaired_states or []:
+            concept_id = str(state.get("concept_id") or "")
+            if state.get("decision") not in {"ALIGNED", "NEW"} or concept_id not in available:
+                continue
+            state_id = str(state["derived_state_id"])
+            grouped[concept_id][state_id] = {
+                "id": state_id,
+                "source_state_id": state.get("source_state_id"),
+                "text": str(state.get("state_text") or ""),
+                "current_normalized": str(state.get("state_text") or ""),
+                "contexts": list(state.get("contexts") or [])[:2],
+            }
         packages: list[dict[str, Any]] = []
         for concept_id in sorted(grouped):
             states = list(grouped[concept_id].values())
@@ -335,6 +348,121 @@ class SemanticPackageBuilder:
             })
         rows.sort(key=lambda row: (-int(row["frequency"]), row["state_id"]))
         return self._chunk("state_object_alignment", rows, states_per_package, "cases")
+
+    def state_repair_packages(
+        self,
+        prior_alignments: list[dict[str, Any]],
+        concepts: list[dict[str, Any]] | None = None,
+        *,
+        candidates_per_state: int = 12,
+        states_per_package: int = 10,
+    ) -> list[dict[str, Any]]:
+        targets = {
+            str(row["state_id"]): row for row in prior_alignments
+            if row.get("decision") in {"UNRESOLVED", "INVALID"}
+        }
+        if not targets:
+            return []
+        available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
+        signatures = {concept_id: self._concept_signature(row) for concept_id, row in available.items()}
+        index = CharNgramIndex(signatures)
+        name_index: dict[str, list[str]] = defaultdict(list)
+        normalized_names: list[tuple[str, str]] = []
+        for concept_id, concept in available.items():
+            for name in [concept.get("canonical_name"), *(concept.get("aliases") or [])]:
+                if name:
+                    normalized_name = normalize_text(str(name))
+                    name_index[normalized_name].append(concept_id)
+                    normalized_names.append((normalized_name, concept_id))
+
+        contexts: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        source_states: dict[str, dict[str, Any]] = {}
+        for rule in self.inputs.rules:
+            for role in ("conditions", "antecedents", "consequents"):
+                for state in rule.get(role) or []:
+                    state_id = str(state.get("id") or "")
+                    if state_id not in targets:
+                        continue
+                    source_states.setdefault(state_id, state)
+                    context = self._state_context(rule, role, state_id)
+                    if context not in contexts[state_id] and len(contexts[state_id]) < 6:
+                        contexts[state_id].append(context)
+
+        cases: list[dict[str, Any]] = []
+        separators = re.compile(r"[、,，/；;]|(?:以及|及其|和|与|或)")
+        for state_id, prior in targets.items():
+            source = source_states.get(state_id, {})
+            object_name = str(prior.get("object_name") or source.get("object") or "")
+            state_text = str(prior.get("state_text") or source.get("raw_state") or "")
+            normalized = str(source.get("normalized_state") or state_text)
+            fragments = [value.strip() for value in separators.split(state_text) if value.strip()]
+            reduced_fragments = [
+                re.sub(r"^(?:含有?|存在|具有|对)", "", value).strip() for value in fragments
+            ]
+            fragments = list(dict.fromkeys([*fragments, *(value for value in reduced_fragments if value)]))
+            query_values = [*fragments, state_text, normalized, object_name]
+            candidate_ids: list[str] = []
+            for fragment in fragments:
+                key = normalize_text(fragment)
+                contained = sorted(
+                    (
+                        (name != key, abs(len(name) - len(key)), len(name), concept_id)
+                        for name, concept_id in normalized_names
+                        if key and (key in name or name in key)
+                    ),
+                )
+                for _not_exact, _distance, _length, concept_id in contained[:3]:
+                    if concept_id not in candidate_ids:
+                        candidate_ids.append(concept_id)
+                for concept_id, _score in index.query(fragment, top_k=2):
+                    if concept_id not in candidate_ids:
+                        candidate_ids.append(concept_id)
+            for value in query_values:
+                for concept_id in name_index.get(normalize_text(value), []):
+                    if concept_id not in candidate_ids:
+                        candidate_ids.append(concept_id)
+                for concept_id, _score in index.query(value, top_k=4):
+                    if concept_id not in candidate_ids:
+                        candidate_ids.append(concept_id)
+                    if len(candidate_ids) >= candidates_per_state:
+                        break
+                if len(candidate_ids) >= candidates_per_state:
+                    break
+            if "极性" in object_name or any(value in state_text for value in ("正极", "负极")):
+                polarity_names = {"dcen", "dcep接法", "直流正接", "直流反接"}
+                polarity_ids: list[str] = []
+                for name, concept_id in normalized_names:
+                    if name in polarity_names and concept_id not in polarity_ids:
+                        polarity_ids.append(concept_id)
+                candidate_ids = [*polarity_ids, *(value for value in candidate_ids if value not in polarity_ids)]
+            candidate_ids = candidate_ids[:candidates_per_state]
+            candidate_payloads = [
+                self._concept_payload(value, available) for value in candidate_ids
+            ]
+            if "极性" in object_name or any(value in state_text for value in ("正极", "负极")):
+                for payload in candidate_payloads:
+                    if normalize_text(payload["name"]) not in {"dcen", "dcep接法"}:
+                        continue
+                    concept = available[payload["id"]]
+                    evidence = next((
+                        str(self.inputs.units[evidence_id].get("content") or "")[:500]
+                        for evidence_id in concept.get("evidence_ids") or []
+                        if evidence_id in self.inputs.units and self.inputs.units[evidence_id].get("content")
+                    ), "")
+                    if evidence:
+                        payload["evidence"] = [evidence]
+            cases.append({
+                "state_id": state_id,
+                "object_name": object_name,
+                "state_text": state_text,
+                "current_normalized": normalized,
+                "previous_decision": prior.get("decision"),
+                "frequency": int(prior.get("frequency") or 0),
+                "contexts": contexts.get(state_id, [])[:6],
+                "candidates": candidate_payloads,
+            })
+        cases.sort(key=lambda row: (-int(row["frequency"]), row["state_id"]))
+        return self._chunk("state_repair", cases, states_per_package, "cases")
 
     @staticmethod
     def _cluster_states(states: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
