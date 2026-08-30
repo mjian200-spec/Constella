@@ -81,7 +81,13 @@ class MemorySnapshot:
         relations: list[dict[str, Any]],
         reviewed_memory: list[dict[str, Any]] | None = None,
     ) -> MemorySnapshot:
-        by_id = {str(row["concept_id"]): deepcopy(row) for row in concepts}
+        by_id = {}
+        for row in concepts:
+            value = deepcopy(row)
+            # Legacy inputs are unapproved until an explicit APPROVED memory event
+            # admits them; a type field alone must not bypass the admission gate.
+            value.setdefault("registration_status", "CANDIDATE")
+            by_id[str(value["concept_id"])] = value
         relation_rows = [deepcopy(row) for row in relations]
         approved_count = 0
         for event in reviewed_memory or []:
@@ -93,7 +99,9 @@ class MemorySnapshot:
                 concept_type = str(concept.get("type") or "")
                 if concept_type not in {ConceptType.OBJECT, ConceptType.STATE}:
                     raise ValueError("approved concept memory requires object/state type")
-                by_id[str(concept["concept_id"])] = deepcopy(concept)
+                approved = deepcopy(concept)
+                approved["registration_status"] = "APPROVED"
+                by_id[str(approved["concept_id"])] = approved
                 continue
             kind = str(event.get("proposal_kind") or "")
             concept_id = str(event.get("concept_id") or "")
@@ -104,6 +112,9 @@ class MemorySnapshot:
                 if concept_type not in {ConceptType.OBJECT, ConceptType.STATE}:
                     raise ValueError("type review requires object/state type")
                 by_id[concept_id]["type"] = concept_type
+                # An APPROVED type review is an explicit approval: the concept
+                # must resolve as registered, not be re-proposed every epoch.
+                by_id[concept_id]["registration_status"] = "APPROVED"
             elif kind == ProposalKind.ALIAS:
                 alias = str(event.get("alias") or "").strip()
                 if not alias:
@@ -151,15 +162,26 @@ class ConceptRegistry:
                 key = normalize_text(str(alias))
                 if key and (concept_id, MatchMethod.EXACT_ALIAS) not in self.exact_index[key]:
                     self.exact_index[key].append((concept_id, MatchMethod.EXACT_ALIAS))
+        self.missing_relation_endpoint_count = 0
         self.parents: dict[str, list[str]] = defaultdict(list)
+        neighbors: dict[str, list[str]] = defaultdict(list)
         for relation in snapshot.relations:
-            if relation.get("type") != "IS_A":
-                continue
             child = str(relation.get("child_concept_id") or "")
             parent = str(relation.get("parent_concept_id") or "")
-            if child in self.concepts and parent in self.concepts and parent not in self.parents[child]:
-                self.parents[child].append(parent)
-        signatures = {concept_id: self._signature(concept_id) for concept_id in self.concepts}
+            if relation.get("type") == "IS_A":
+                if child not in self.concepts or parent not in self.concepts:
+                    self.missing_relation_endpoint_count += 1
+                    continue
+                if parent not in self.parents[child]:
+                    self.parents[child].append(parent)
+            if child in self.concepts and parent in self.concepts:
+                if parent not in neighbors[child]:
+                    neighbors[child].append(parent)
+                if child not in neighbors[parent]:
+                    neighbors[parent].append(child)
+        signatures = {
+            concept_id: self._signature(concept_id, neighbors) for concept_id in self.concepts
+        }
         self.ngram = CharNgramIndex(signatures)
         name_signatures = {
             concept_id: "\n".join(str(value) for value in [
@@ -184,6 +206,12 @@ class ConceptRegistry:
     def __contains__(self, concept_id: str) -> bool:
         return concept_id in self.concepts
 
+    def is_approved(self, concept_id: str) -> bool:
+        return (
+            concept_id in self.concepts
+            and self.concepts[concept_id].get("registration_status") == "APPROVED"
+        )
+
     def exact(self, text: str, *, concept_type: str) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -199,8 +227,12 @@ class ConceptRegistry:
 
     def resolve_exact(self, text: str, *, concept_type: str) -> dict[str, Any]:
         matches = self.exact(text, concept_type=concept_type)
-        typed = [row for row in matches if row.get("type") == concept_type]
-        untyped = [row for row in matches if not row.get("type")]
+        approved = [row for row in matches if row.get("registration_status") == "APPROVED"]
+        candidates = [row for row in matches if row.get("registration_status") != "APPROVED"]
+        typed = [row for row in approved if row.get("type") == concept_type]
+        untyped = [row for row in approved if not row.get("type")]
+        # An approved concept wins even when an unapproved candidate shares the
+        # exact name; the candidate stays visible via the "candidates" payload.
         if len(typed) == 1 and not untyped:
             return {
                 "status": AlignmentStatus.MATCHED,
@@ -213,6 +245,13 @@ class ConceptRegistry:
                 "status": AlignmentStatus.TYPE_REVIEW,
                 "concept_id": untyped[0]["id"],
                 "match_method": untyped[0]["match_method"],
+                "candidates": matches,
+            }
+        if not approved and len(candidates) == 1:
+            return {
+                "status": AlignmentStatus.PROPOSED,
+                "concept_id": candidates[0]["id"],
+                "match_method": candidates[0]["match_method"],
                 "candidates": matches,
             }
         if matches:
@@ -304,6 +343,8 @@ class ConceptRegistry:
             return 0.0
         covered: set[int] = set()
         for term, _concept_id in self.lexical_terms.get(concept_type, []):
+            if len(covered) == len(normalized):
+                break
             start = normalized.find(term)
             while start >= 0:
                 covered.update(range(start, start + len(term)))
@@ -323,6 +364,7 @@ class ConceptRegistry:
             "name": str(row.get("canonical_name") or ""),
             "aliases": list(row.get("aliases") or []),
             "type": row.get("type"),
+            "registration_status": row.get("registration_status", "CANDIDATE"),
             "definition": row.get("definition"),
             "evidence_ids": list(row.get("evidence_ids") or []),
             "parents": [
@@ -336,20 +378,12 @@ class ConceptRegistry:
             result["score"] = round(float(score), 6)
         return result
 
-    def _signature(self, concept_id: str) -> str:
+    def _signature(self, concept_id: str, neighbors: dict[str, list[str]]) -> str:
         row = self.concepts[concept_id]
-        neighbors: list[str] = []
-        for relation in self.snapshot.relations:
-            child = str(relation.get("child_concept_id") or "")
-            parent = str(relation.get("parent_concept_id") or "")
-            if child == concept_id and parent in self.concepts:
-                neighbors.append(str(self.concepts[parent].get("canonical_name") or ""))
-            elif parent == concept_id and child in self.concepts:
-                neighbors.append(str(self.concepts[child].get("canonical_name") or ""))
         return "\n".join(str(value) for value in [
             row.get("canonical_name") or "",
             *(row.get("aliases") or []),
             row.get("definition") or "",
             *(row.get("alignment_examples") or []),
-            *neighbors,
+            *(str(self.concepts[neighbor].get("canonical_name") or "") for neighbor in neighbors.get(concept_id, [])),
         ] if value)

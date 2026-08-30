@@ -11,16 +11,26 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from constella.knowledge_graph.viewer_server import serve_knowledge_graph
+from constella.knowledge_graph.viewer_server import serve_file_knowledge_graph, serve_knowledge_graph
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Serve the Constella Neo4j Knowledge Graph Viewer.")
     parser.add_argument("--dataset-id", default="gmaw_full_20260829")
     parser.add_argument("--neo4j-config", default=str(ROOT / "configs" / "rule_extraction" / "neo4j.yaml"))
+    parser.add_argument(
+        "--concept-dir",
+        help="Serve concepts and hierarchy directly from final JSONL files without Neo4j.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8767)
     args = parser.parse_args()
+    if args.concept_dir:
+        serve_file_knowledge_graph(
+            ROOT / "web" / "knowledge_graph", args.concept_dir,
+            args.dataset_id, args.host, args.port,
+        )
+        return 0
     config = yaml.safe_load(Path(args.neo4j_config).read_text(encoding="utf-8")) or {}
     neo4j = config.get("neo4j") or {}
     password_env = str(neo4j.get("password_env") or "CONSTELLA_NEO4J_PASSWORD")

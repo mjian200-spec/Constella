@@ -7,8 +7,8 @@ from constella.semantic_alignment.state_normalizer import StateNormalizer
 
 def _normalizer() -> StateNormalizer:
     memory = MemorySnapshot.build([
-        {"concept_id": "charging", "canonical_name": "充电中", "aliases": ["正在充电"], "type": "state"},
-        {"concept_id": "increase", "canonical_name": "增大", "aliases": ["提高"], "type": "state"},
+        {"concept_id": "charging", "canonical_name": "充电中", "aliases": ["正在充电"], "type": "state", "registration_status": "APPROVED"},
+        {"concept_id": "increase", "canonical_name": "增大", "aliases": ["提高"], "type": "state", "registration_status": "APPROVED"},
         {"concept_id": "untyped", "canonical_name": "短路过渡", "aliases": []},
     ], [])
     return StateNormalizer(ConceptRegistry(memory), proposal_threshold=1)
@@ -61,7 +61,42 @@ def test_generic_change_expression_is_normalization_pattern_not_concept():
     assert row["proposal"]["proposal_kind"] == ProposalKind.NORMALIZATION_PATTERN
 
 
-def test_untyped_state_match_requires_review():
+def test_unregistered_state_match_requires_concept_admission():
     row = _normalizer().normalize("短路过渡", frequency=1)
-    assert row["alignment_status"] == AlignmentStatus.TYPE_REVIEW
-    assert row["proposal"]["proposal_kind"] == ProposalKind.TYPE_REVIEW
+    assert row["alignment_status"] == AlignmentStatus.PROPOSED
+    assert row["state_concept_id"] is None
+    assert row["candidate_concept_id"] == "untyped"
+    assert row["proposal"]["proposal_kind"] == ProposalKind.CONCEPT_APPROVAL
+
+
+def test_ms_and_min_units_win_over_bare_m():
+    row = _normalizer().normalize("保温3min", frequency=1)
+    assert row["quantity"]["unit_original"] == "min"
+    assert row["quantity"]["unit_canonical"] == "s"
+    assert row["quantity"]["value"] == "180"
+    row = _normalizer().normalize("延迟40ms", frequency=1)
+    assert row["quantity"]["unit_original"] == "ms"
+    assert row["quantity"]["value"] == "0.04"
+
+
+def test_negated_comparators_keep_their_meaning():
+    row = _normalizer().normalize("充电电流不大于60A", frequency=1)
+    assert row["operator_family"] == "<"
+    assert row["quantity"]["inclusive"] is True
+    row = _normalizer().normalize("不小于60A", frequency=1)
+    assert row["operator_family"] == ">"
+    assert row["quantity"]["inclusive"] is True
+
+
+def test_range_with_unit_on_low_endpoint_keeps_both_bounds():
+    row = _normalizer().normalize("加入1%~5% O2", frequency=1)
+    assert row["operator_family"] == "BETWEEN"
+    assert row["quantity"]["lower"] == "1"
+    assert row["quantity"]["upper"] == "5"
+    assert row["quantity"]["unit_original"] == "%"
+
+
+def test_scientific_notation_magnitude_is_kept():
+    row = _normalizer().normalize("大于1e3A", frequency=1)
+    assert row["quantity"]["value"] == "1000"
+    assert row["quantity"]["unit_original"] == "A"

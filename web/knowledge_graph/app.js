@@ -3,7 +3,11 @@ const app = {
   graph: { nodes: [], edges: [] },
   selectedId: null,
   searchTimer: null,
+  filterTimer: null,
   transform: { x: 0, y: 0, k: 1 },
+  viewMode: "tree",
+  hierarchy: null,
+  treeData: null,
 };
 
 const $ = selector => document.querySelector(selector);
@@ -56,12 +60,29 @@ async function loadSummary() {
 }
 
 async function loadOverview() {
+  app.viewMode = "graph";
+  syncViewControls();
   setGraphLoading("正在组织概念结构…");
   const graph = await api("/api/graph/overview?limit=110");
+  if (app.viewMode !== "graph") return;  // stale response from an earlier click
   app.selectedId = null;
   $("#graph-title").textContent = graph.title;
   renderGraph(graph, true);
   renderInspector(null);
+}
+
+async function loadHierarchy(force = false) {
+  app.viewMode = "tree";
+  syncViewControls();
+  app.selectedId = null;
+  renderInspector(null);
+  if (!app.hierarchy || force) {
+    setGraphLoading("正在构建概念层级…");
+    app.hierarchy = await api("/api/graph/hierarchy?limit=5000");
+  }
+  if (app.viewMode !== "tree") return;  // stale response from an earlier click
+  $("#graph-title").textContent = app.hierarchy.title;
+  renderHierarchy(app.hierarchy);
 }
 
 function setGraphLoading(message) {
@@ -96,6 +117,13 @@ function renderResults(results) {
 }
 
 async function loadEntity(kind, id) {
+  if (app.viewMode === "tree" && kind === "concept") {
+    return inspectTreeConcept(id);
+  }
+  if (app.viewMode === "tree") {
+    app.viewMode = "graph";
+    syncViewControls();
+  }
   app.selectedId = id;
   setGraphLoading("正在展开相邻节点…");
   renderInspector({ loading: true });
@@ -108,6 +136,38 @@ async function loadEntity(kind, id) {
   } catch (error) {
     toast(`无法读取节点：${error.message}`, true);
     await loadOverview();
+  }
+}
+
+async function inspectTreeConcept(id) {
+  app.selectedId = id;
+  renderInspector({ loading: true });
+  try {
+    const detail = await api(`/api/entity/concept/${encodeURIComponent(id)}`);
+    if (app.viewMode !== "tree") return;  // stale response from an earlier click
+    renderInspector(detail);
+    document.querySelectorAll(".tree-concept").forEach(button => {
+      button.classList.toggle("selected", button.dataset.id === id);
+    });
+    document.querySelectorAll(".result").forEach(row => row.classList.toggle("selected", row.dataset.id === id));
+    const located = [...document.querySelectorAll(".tree-concept")].find(button => button.dataset.id === id);
+    if (located) {
+      for (let branch = located.closest(".tree-item"); branch; branch = branch.parentElement?.closest(".tree-item")) {
+        branch.classList.remove("collapsed");
+      }
+      located.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      // 惰性渲染下深层概念可能尚未构建：沿祖先链展开后再次定位
+      const revealed = revealTreeConcept(id);
+      if (revealed) {
+        revealed.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else {
+        toast("该概念暂无 IS_A / PART_OF 层级关系，已在右侧显示详情。");
+      }
+    }
+  } catch (error) {
+    toast(`无法读取概念：${error.message}`, true);
+    renderInspector(null);
   }
 }
 
@@ -182,9 +242,181 @@ function propertyLabel(key) {
   }[key] || key;
 }
 
+function renderHierarchy(payload) {
+  const host = $("#graph");
+  const nodeMap = new Map((payload.nodes || []).map(node => [node.id, node]));
+  const children = new Map();
+  const parents = new Map();
+  for (const edge of payload.edges || []) {
+    if (!children.has(edge.target)) children.set(edge.target, []);
+    children.get(edge.target).push({ node: nodeMap.get(edge.source), edge });
+    if (!parents.has(edge.source)) parents.set(edge.source, []);
+    parents.get(edge.source).push(edge.target);
+  }
+  for (const entries of children.values()) {
+    entries.sort((left, right) => left.node.title.localeCompare(right.node.title, "zh-CN"));
+  }
+  app.treeData = { nodes: nodeMap, children, parents };
+  const stats = payload.stats || {};
+  host.className = "graph tree-mode";
+  host.innerHTML = `<div class="tree-shell">
+    <div class="tree-summary">
+      <div class="tree-stats">
+        <span><b>${number(stats.related_concepts)}</b> 个层级概念</span>
+        <span><b>${number(stats.relations)}</b> 条层级关系</span>
+        <span><b>${number(stats.roots)}</b> 个根概念</span>
+        ${Number.isFinite(stats.isolated_concepts) ? `<span class="muted-count">${number(stats.isolated_concepts)} 个孤立概念未列入树</span>` : ""}
+      </div>
+      <label class="tree-filter"><span>筛选层级</span><input id="tree-filter" type="search" placeholder="输入概念名称" autocomplete="off"></label>
+    </div>
+    ${payload.truncated ? '<div class="tree-warning">层级关系超过当前载入上限，展示的是部分结果。</div>' : ""}
+    <div class="tree-scroll">
+      ${(payload.root_ids || []).filter(id => nodeMap.has(id)).length
+        ? `<ul class="tree-forest">${(payload.root_ids || []).filter(id => nodeMap.has(id)).map(id => buildBranch(id)).join("")}</ul>`
+        : '<div class="empty-tree">当前数据集没有 IS_A 或 PART_OF 层级关系。</div>'}
+    </div>
+  </div>`;
+  bindHierarchyControls();
+}
+
+function buildBranch(nodeId, relation = null, path = new Set()) {
+  const data = app.treeData;
+  const node = data.nodes.get(nodeId);
+  if (!node) return "";
+  const cyclic = path.has(nodeId);
+  const nextPath = new Set(path);
+  nextPath.add(nodeId);
+  const descendants = cyclic ? [] : (data.children.get(nodeId) || []);
+  const relationTag = relation ? `<span class="tree-relation ${relation.type.toLowerCase().replace("_", "-")}">${esc(relationLabel(relation.type))}</span>` : '<span class="tree-root-tag">根概念</span>';
+  return `<li class="tree-item${descendants.length ? "" : " leaf"}" data-id="${esc(nodeId)}" data-title="${esc(node.title.toLowerCase())}">
+    <div class="tree-row">
+      <button class="tree-toggle" aria-label="${descendants.length ? "折叠或展开子概念" : "无子概念"}" ${descendants.length ? "" : "disabled"}>›</button>
+      <button class="tree-concept${node.id === app.selectedId ? " selected" : ""}" data-id="${esc(node.id)}">
+        <span>${esc(node.title)}</span>${relationTag}
+      </button>
+      ${descendants.length ? `<small>${number(descendants.length)} 个直接子概念</small>` : ""}
+    </div>
+    ${cyclic ? '<div class="tree-cycle">检测到循环关系，已停止展开</div>' : descendants.length ? '<ul class="tree-children"></ul>' : ""}
+  </li>`;
+}
+
+function expandBranch(item) {
+  const ul = item.querySelector(":scope > ul.tree-children");
+  if (!ul || ul.dataset.built) return;
+  ul.dataset.built = "1";
+  const path = [];
+  for (let el = item; el && el.classList.contains("tree-item"); el = el.parentElement?.closest(".tree-item")) {
+    path.push(el.dataset.id);
+  }
+  path.reverse();
+  ul.innerHTML = [...(app.treeData.children.get(item.dataset.id) || [])]
+    .map(entry => buildBranch(entry.node.id, entry.edge, new Set(path)))
+    .join("");
+}
+
+function revealTreeConcept(id) {
+  if (!app.treeData) return null;
+  const chain = [id];
+  const seen = new Set([id]);
+  let cursor = id;
+  while (app.treeData.parents.has(cursor)) {
+    cursor = app.treeData.parents.get(cursor)[0];
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    chain.unshift(cursor);
+  }
+  for (const nodeId of chain) {
+    const button = document.querySelector(`.tree-concept[data-id="${CSS.escape(nodeId)}"]`);
+    if (!button) continue;
+    const item = button.closest(".tree-item");
+    item.classList.remove("collapsed");
+    expandBranch(item);
+  }
+  return document.querySelector(`.tree-concept[data-id="${CSS.escape(id)}"]`);
+}
+
+function expandAllBranches() {
+  const pending = [...document.querySelectorAll(".tree-item:not(.leaf)")];
+  for (let index = 0; index < pending.length; index += 1) {
+    expandBranch(pending[index]);
+    pending.push(...pending[index].querySelectorAll(":scope > ul > .tree-item:not(.leaf)"));
+  }
+}
+
+function bindHierarchyControls() {
+  const scroll = $(".tree-scroll");
+  if (scroll) {
+    scroll.onclick = (event) => {
+      const toggle = event.target.closest(".tree-toggle");
+      if (toggle) {
+        const item = toggle.closest(".tree-item");
+        const collapsed = item.classList.toggle("collapsed");
+        if (!collapsed) expandBranch(item);
+        return;
+      }
+      const concept = event.target.closest(".tree-concept");
+      if (concept) inspectTreeConcept(concept.dataset.id);
+    };
+  }
+  const filter = $("#tree-filter");
+  if (filter) filter.oninput = () => {
+    clearTimeout(app.filterTimer);
+    app.filterTimer = setTimeout(() => filterHierarchy(filter.value), 220);
+  };
+}
+
+function filterHierarchy(value) {
+  const query = value.trim().toLowerCase();
+  if (!app.treeData) return;
+  if (query) expandAllBranches();
+  const items = [...document.querySelectorAll(".tree-item")];
+  if (!query) {
+    for (const item of items) item.hidden = false;
+    return;
+  }
+  const visible = new Set();
+  const mark = (nodeId) => {
+    if (visible.has(nodeId)) return;
+    visible.add(nodeId);
+    for (const parent of app.treeData.parents.get(nodeId) || []) mark(parent);
+  };
+  for (const node of app.treeData.nodes.values()) {
+    if ((node.title || "").toLowerCase().includes(query)) mark(node.id);
+  }
+  for (const item of items) {
+    if (visible.has(item.dataset.id)) {
+      item.hidden = false;
+      for (let el = item; el && el.classList.contains("tree-item"); el = el.parentElement?.closest(".tree-item")) {
+        el.classList.remove("collapsed");
+      }
+    } else {
+      item.hidden = true;
+    }
+  }
+}
+
+function setHierarchyCollapsed(collapsed) {
+  if (!collapsed) expandAllBranches();
+  document.querySelectorAll(".tree-item:not(.leaf)").forEach(item => item.classList.toggle("collapsed", collapsed));
+}
+
+function syncViewControls() {
+  document.querySelectorAll("[data-view]").forEach(button => button.classList.toggle("active", button.dataset.view === app.viewMode));
+  $("#tree-actions").hidden = app.viewMode !== "tree";
+  $("#graph-actions").hidden = app.viewMode !== "graph";
+  $("#view-eyebrow").textContent = app.viewMode === "tree" ? "HIERARCHY" : "GRAPH";
+  $("#legend").innerHTML = app.viewMode === "tree" ? `
+    <span><i class="is-a"></i>IS_A 子类</span><span><i class="part-of"></i>PART_OF 组成</span>
+    <span class="hint">父概念在上 · 点击概念查看详情</span>` : `
+    <span><i class="concept"></i>概念</span><span><i class="rule"></i>规则</span>
+    <span><i class="state"></i>状态表达式</span><span><i class="transition"></i>状态迁移</span>
+    <span class="hint">滚轮缩放 · 拖动画布 · 点击节点查看</span>`;
+}
+
 function renderGraph(payload, reset = false) {
   app.graph = { nodes: payload.nodes || [], edges: payload.edges || [] };
   const host = $("#graph");
+  host.className = "graph";
   host.innerHTML = "";
   if (!app.graph.nodes.length) {
     host.innerHTML = '<div class="loading">当前节点没有可展示的邻域。</div>';
@@ -343,6 +575,11 @@ function bindControls() {
   $("#fit").onclick = fitGraph;
   $("#zoom-in").onclick = () => adjustZoom(1.2);
   $("#zoom-out").onclick = () => adjustZoom(.82);
+  $("#expand-all").onclick = () => setHierarchyCollapsed(false);
+  $("#collapse-all").onclick = () => setHierarchyCollapsed(true);
+  document.querySelectorAll("[data-view]").forEach(button => {
+    button.onclick = () => button.dataset.view === "tree" ? loadHierarchy() : loadOverview();
+  });
   document.querySelectorAll("[data-kind]").forEach(button => {
     button.onclick = () => { $("#kind").value = button.dataset.kind; search(); };
   });
@@ -351,7 +588,7 @@ function bindControls() {
 async function boot() {
   bindControls();
   try {
-    await Promise.all([loadSummary(), loadOverview()]);
+    await Promise.all([loadSummary(), loadHierarchy()]);
     await search();
   } catch (error) {
     $("#graph").innerHTML = `<div class="fatal"><b>无法读取知识图谱</b><span>${esc(error.message)}</span></div>`;

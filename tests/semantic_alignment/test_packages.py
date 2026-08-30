@@ -8,12 +8,12 @@ from constella.semantic_alignment.packages import CharNgramIndex
 def _inputs() -> AlignmentInputs:
     return AlignmentInputs(
         concepts=[
-            {"concept_id": "current", "canonical_name": "焊接电流", "aliases": ["电流"], "type": "object"},
-            {"concept_id": "depth", "canonical_name": "熔深", "aliases": [], "type": "object"},
-            {"concept_id": "battery", "canonical_name": "电池组", "aliases": [], "type": "object"},
-            {"concept_id": "temperature", "canonical_name": "温度", "aliases": [], "type": "object"},
-            {"concept_id": "increase", "canonical_name": "增大", "aliases": ["提高"], "type": "state"},
-            {"concept_id": "charging", "canonical_name": "充电中", "aliases": ["正在充电"], "type": "state"},
+            {"concept_id": "current", "canonical_name": "焊接电流", "aliases": ["电流"], "type": "object", "registration_status": "APPROVED"},
+            {"concept_id": "depth", "canonical_name": "熔深", "aliases": [], "type": "object", "registration_status": "APPROVED"},
+            {"concept_id": "battery", "canonical_name": "电池组", "aliases": [], "type": "object", "registration_status": "APPROVED"},
+            {"concept_id": "temperature", "canonical_name": "温度", "aliases": [], "type": "object", "registration_status": "APPROVED"},
+            {"concept_id": "increase", "canonical_name": "增大", "aliases": ["提高"], "type": "state", "registration_status": "APPROVED"},
+            {"concept_id": "charging", "canonical_name": "充电中", "aliases": ["正在充电"], "type": "state", "registration_status": "APPROVED"},
         ],
         relations=[],
         rules=[
@@ -58,7 +58,7 @@ def test_packages_are_tier_homogeneous_stable_and_size_bounded():
     first = builder.object_alignment_packages(objects_per_package=2, max_package_chars=4_000)
     second = builder.object_alignment_packages(objects_per_package=2, max_package_chars=4_000)
     assert [row["package_id"] for row in first] == [row["package_id"] for row in second]
-    assert all(len({case["confidence"] >= 0 for case in package["cases"]}) == 1 for package in first)
+    assert all(len({case["tier"] for case in package["cases"]}) == 1 for package in first)
     assert all(package["tier"] in {PackageTier.H1, PackageTier.H2, PackageTier.H3} for package in first)
     assert builder.package_report(first)["max_package_chars"] < 6_000
 

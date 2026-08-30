@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -265,7 +266,9 @@ def assemble_semantics(
 
 def _fallback_interpretation(source: dict[str, Any], registry: ConceptRegistry) -> dict[str, Any]:
     exact = registry.resolve_exact(source["name"], concept_type=ConceptType.OBJECT)
-    if exact["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW}:
+    if exact["status"] in {
+        AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW, AlignmentStatus.PROPOSED,
+    }:
         return {
             "object_id": source["object_id"],
             "decision": "ATOMIC",
@@ -299,9 +302,10 @@ def _resolve_object_component(
     proposal = None
     if candidate_id:
         concept = registry.concepts[str(candidate_id)]
-        if concept.get("type") == ConceptType.OBJECT:
+        approved = registry.is_approved(str(candidate_id))
+        if approved and concept.get("type") == ConceptType.OBJECT:
             status = AlignmentStatus.MATCHED
-        elif not concept.get("type"):
+        elif approved and not concept.get("type"):
             status = AlignmentStatus.TYPE_REVIEW
             proposal = {
                 "proposal_kind": ProposalKind.TYPE_REVIEW,
@@ -309,11 +313,20 @@ def _resolve_object_component(
                 "concept_id": candidate_id,
                 "canonical_name": str(concept.get("canonical_name") or text),
             }
-        else:
+        elif approved:
             status = AlignmentStatus.AMBIGUOUS
+        else:
+            status = AlignmentStatus.PROPOSED
+            proposal = {
+                "proposal_kind": ProposalKind.CONCEPT_APPROVAL,
+                "concept_type": ConceptType.OBJECT,
+                "concept_id": candidate_id,
+                "canonical_name": str(concept.get("canonical_name") or text),
+            }
         return {
             "text": text,
-            "concept_id": candidate_id,
+            "concept_id": candidate_id if approved else None,
+            "candidate_concept_id": None if approved else candidate_id,
             "alignment_status": status,
             "match_method": requested_match_method or MatchMethod.LLM_CANDIDATE,
             "candidates": [registry.payload(str(candidate_id))],
@@ -329,6 +342,14 @@ def _resolve_object_component(
             "concept_id": concept_id,
             "canonical_name": str(registry.concepts[str(concept_id)].get("canonical_name") or text),
         }
+    elif status == AlignmentStatus.PROPOSED and exact.get("concept_id"):
+        candidate_id = str(exact["concept_id"])
+        proposal = {
+            "proposal_kind": ProposalKind.CONCEPT_APPROVAL,
+            "concept_type": ConceptType.OBJECT,
+            "concept_id": candidate_id,
+            "canonical_name": str(registry.concepts[candidate_id].get("canonical_name") or text),
+        }
     elif status == AlignmentStatus.EXPRESSION_ONLY and frequency > 0:
         status = AlignmentStatus.PROPOSED
         proposal = {
@@ -338,7 +359,8 @@ def _resolve_object_component(
         }
     return {
         "text": text,
-        "concept_id": exact.get("concept_id"),
+        "concept_id": exact.get("concept_id") if status != AlignmentStatus.PROPOSED else None,
+        "candidate_concept_id": exact.get("concept_id") if status == AlignmentStatus.PROPOSED else None,
         "alignment_status": status,
         "match_method": exact.get("match_method", MatchMethod.NONE),
         "candidates": exact.get("candidates", []),
@@ -475,8 +497,11 @@ class _ProposalAccumulator:
     def rows(self, *, min_support: int) -> list[dict[str, Any]]:
         result = []
         for row in self.values.values():
-            if row["proposal_kind"] not in {ProposalKind.TYPE_REVIEW, ProposalKind.ALIAS} \
-                    and int(row["support"]) < min_support:
+            # Admission candidates must survive to the proposals artifact; the
+            # gate enforces minimum_support itself (deterministic checks).
+            if row["proposal_kind"] not in {
+                ProposalKind.TYPE_REVIEW, ProposalKind.ALIAS, ProposalKind.CONCEPT_APPROVAL,
+            } and int(row["support"]) < min_support:
                 continue
             result.append({
                 **row,
@@ -498,10 +523,15 @@ def _prioritize_proposals(
     for source in rows:
         row = dict(source)
         name = normalize_text(str(row.get("canonical_name") or ""))
-        unlock_count = sum(bool(name and name in expression) for expression in object_expressions)
+        # Single-character names (e.g. "高") substring-match hundreds of
+        # expressions; require at least two characters for unlock credit.
+        unlock_count = sum(
+            bool(name and len(name) >= 2 and name in expression)
+            for expression in object_expressions
+        )
         kind = str(row["proposal_kind"])
         support = int(row["support"])
-        if kind == ProposalKind.TYPE_REVIEW:
+        if kind in {ProposalKind.TYPE_REVIEW, ProposalKind.CONCEPT_APPROVAL}:
             priority = "P0"
         elif unlock_count >= 5 and support >= 20:
             priority = "P0"
@@ -587,14 +617,14 @@ def _assembly_report(
     for row in object_rows:
         invalid_refs.extend(
             core.get("concept_id") for core in row["core_objects"]
-            if core.get("concept_id") and core["concept_id"] not in registry
+            if core.get("concept_id") and not registry.is_approved(str(core["concept_id"]))
         )
     for row in state_rows:
-        if row.get("state_concept_id") and row["state_concept_id"] not in registry:
+        if row.get("state_concept_id") and not registry.is_approved(str(row["state_concept_id"])):
             invalid_refs.append(row["state_concept_id"])
         invalid_refs.extend(
             ref.get("concept_id") for ref in row.get("subject_object_refs") or []
-            if ref.get("concept_id") and ref["concept_id"] not in registry
+            if ref.get("concept_id") and not registry.is_approved(str(ref["concept_id"]))
         )
     source_by_id = {row["source_state_id"]: row for row in selected_states}
     raw_unchanged = all(
@@ -618,6 +648,8 @@ def _assembly_report(
         "coverage_object_count": len(coverage_rows),
         "memory_version": builder.memory.version,
         "registry_concept_count": len(registry.concepts),
+        "registered_concept_count": sum(registry.is_approved(key) for key in registry.concepts),
+        "missing_relation_endpoint_count": registry.missing_relation_endpoint_count,
         "concepts_created_by_alignment": 0,
         "invariants": {
             "one_object_record_per_source_state": len(object_ids) == len(set(object_ids)) and set(object_ids) == expected_ids,
@@ -625,7 +657,7 @@ def _assembly_report(
             "derived_states_have_source": all(row.get("source_state_id") in expected_ids for row in state_rows),
             "raw_fields_unchanged": raw_unchanged,
             "source_frequency_preserved": actual_frequency == expected_frequency,
-            "all_concept_references_in_memory": not invalid_refs,
+            "all_concept_references_are_approved": not invalid_refs,
             "zero_concept_creation": True,
         },
     }
@@ -634,7 +666,7 @@ def _assembly_report(
 def write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary = target.with_suffix(f"{target.suffix}.{os.getpid()}.tmp")
     with temporary.open("w", encoding="utf-8") as stream:
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -644,6 +676,6 @@ def write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
 def write_json(path: str | Path, value: Any) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary = target.with_suffix(f"{target.suffix}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)

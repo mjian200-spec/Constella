@@ -2,7 +2,9 @@
 
 ## 1. 模块边界
 
-语义对齐模块是只读的语义记录编译器。它读取规则、概念注册中心和审核记忆，输出对象语义、状态语义、审核提案和派生画像；不创建、融合、删除概念，不修改规则，也不写入Neo4j。
+语义对齐模块是只读的语义记录编译器。它读取规则、候选概念目录和正式注册记忆，输出对象语义、状态语义、晋升提案和派生画像；不在对齐阶段创建、融合、删除概念，不修改规则，也不写入Neo4j。
+
+`outputs/article_concepts_full_20260829`中的720个条目都是文章模型发现的`CANDIDATE`，不是审核通过概念。它们只参与召回和自动准入判断。只有完整概念身份与类型同时通过准入门、以`registration_status=APPROVED`写入版本化记忆后，才属于正式注册中心，才允许产生`MATCHED`和画像。
 
 概念只保存跨规则稳定的种类身份：`concept_id`、名称、别名、`object|state`类型、定义、`IS_A|PART_OF|SAME_AS`和证据指针。原文、参数、条件和限定保存在语义记录。
 
@@ -13,7 +15,7 @@
 - `structure`：`ATOMIC | COMPOSED | UNRESOLVED`
 - `alignment_status`：`MATCHED | PARTIAL | AMBIGUOUS | PROPOSED | TYPE_REVIEW | EXPRESSION_ONLY`
 
-`COMPOSED + MATCHED`表示表达包含多个语义部分，且所有部分均已引用审核概念。缺少审核类型的历史概念只能得到`TYPE_REVIEW`，不能伪装成强匹配。
+`COMPOSED + MATCHED`表示表达包含多个语义部分，且所有部分均已引用正式注册概念。候选目录中的精确命中仍为`PROPOSED`并生成`CONCEPT_APPROVAL`，不能伪装成强匹配。只有身份已批准但缺少类型的遗留注册概念才使用`TYPE_REVIEW`。
 
 ## 3. 对象语义记录
 
@@ -77,6 +79,7 @@ source_rule_ids: []
 
 - `OBJECT_CONCEPT`
 - `STATE_CONCEPT`
+- `CONCEPT_APPROVAL`
 - `NORMALIZATION_PATTERN`
 - `ALIAS`
 - `TYPE_REVIEW`
@@ -94,7 +97,7 @@ package不得混合置信等级。package优先级为：置信等级、结构复
 
 ## 7. 审核记忆与epoch
 
-同一并发批次冻结使用一个只读记忆快照`Mn`。审核通过的新概念、别名、类型和关系由外部晋升流程写成审核记忆；下一次运行加载它们形成`Mn+1`，重建索引并重新评分未完成或可重试对象。
+同一并发批次冻结使用一个只读记忆快照`Mn`。模型准入门对候选概念同时检查稳定种类、非实例/参数、单一身份、文章证据充分和类型清晰；只有五项全部通过且模型置信度为`HIGH`时，才写入完整的APPROVED概念事件。下一次运行加载它们形成`Mn+1`，重建索引并重新评分。
 
 未审核LLM输出、规则参数、限定和`EXPRESSION_ONLY`不能进入记忆。缓存指纹必须包含`memory_version`，避免并发顺序影响结果。
 
@@ -110,39 +113,29 @@ package不得混合置信等级。package优先级为：置信等级、结构复
 
 报告必须记录schema、prompt、输入和记忆指纹，并验证：每个源状态恰好一条对象记录和一条`RULE_VALUE`记录；派生状态均有来源；原文不变；源频率守恒；所有非空概念ID属于当前记忆；概念数量不因对齐运行而变化。
 
-## 9. 递进运行方法
+## 9. 自动递进运行方法
 
-默认只运行到`H1`，强制在复杂包之前形成审核屏障：
+单次对齐默认只运行到`H1`。自动循环使用已有全量结果收集第一批候选，然后执行“准入→冻结记忆→H3全量重跑→再次准入”，直到没有新批准或达到epoch上限：
 
 ```bash
 # 只构建索引、分级和package，不调用模型
 python scripts/align_semantics.py --dry-run
 
-# 第一轮：机械精确项和H1高置信对象
-python scripts/align_semantics.py --max-tier H1
-
-# 外部审核alignment_proposals_through_h1.jsonl后形成reviewed_memory.jsonl
-# 第二轮：加载已审核记忆，重新分级并运行到H2
-python scripts/align_semantics.py \
-  --reviewed-memory reviewed_memory.jsonl \
-  --max-tier H2
-
-# 最后一轮：显式放行复杂长尾
-python scripts/align_semantics.py \
-  --reviewed-memory reviewed_memory.jsonl \
-  --max-tier H3
+python scripts/run_semantic_alignment_loop.py \
+  --seed-artifact-dir outputs/semantic_alignment_content_v2_full_20260830 \
+  --output-dir outputs/semantic_alignment_auto_loop_20260831 \
+  --max-epochs 2
 ```
 
-审核记忆只接受`status=APPROVED`事件。类型和别名事件示例：
+自动准入写入的是完整概念事件，而不是给720个候选批量补类型：
 
 ```json
-{"status":"APPROVED","proposal_kind":"TYPE_REVIEW","concept_id":"concept_xxx","type":"object"}
-{"status":"APPROVED","proposal_kind":"ALIAS","concept_id":"concept_xxx","alias":"审核别名"}
+{"status":"APPROVED","proposal_kind":"CONCEPT_APPROVAL","approval_mode":"MODEL_GATE","concept":{"concept_id":"concept_xxx","canonical_name":"电弧","aliases":[],"definition":"...","type":"object","registration_status":"APPROVED","evidence_ids":["unit_x"]}}
 ```
 
-外部概念晋升流程也可以提供完整的、已经审核的`concept`对象。加载记忆后会生成新的`memory_version`，旧package缓存不会被误用；尚未完成的对象按新词典重新计算置信度和package。
+加载记忆后会生成新的`memory_version`，旧package缓存不会被误用；尚未完成的对象按新注册中心重新计算置信度和package。准入决策、未批准原因、Prompt、模型、基础记忆版本和每轮指标均独立落盘。新概念提案暂不自动创建，因为当前语义提案还没有绑定到足够的原始证据单元；它们继续进入下一轮候选收集，不污染正式注册中心。
 
-提案带`support`、`unlock_count`和`review_priority=P0..P3`。类型审核以及同时具有高support和高解锁价值的概念最先审核；变化词和数量模式默认位于低优先级，不能直接晋升为概念。
+提案带`support`、`unlock_count`和`review_priority=P0..P3`。候选准入以及同时具有高support和高解锁价值的概念最先处理；变化词和数量模式默认位于低优先级，不能直接晋升为概念。
 
 ## 10. 评价指标
 

@@ -4,32 +4,44 @@ from constella.semantic_alignment.models import AlignmentStatus
 from constella.semantic_alignment.registry import ConceptRegistry, MemorySnapshot
 
 
-def test_untyped_exact_reference_requires_type_review():
+def test_unregistered_exact_reference_requires_concept_admission():
     memory = MemorySnapshot.build([
         {"concept_id": "c1", "canonical_name": "焊接电流", "aliases": ["电流"]},
     ], [])
     registry = ConceptRegistry(memory)
     result = registry.resolve_exact("电流", concept_type="object")
-    assert result["status"] == AlignmentStatus.TYPE_REVIEW
+    assert result["status"] == AlignmentStatus.PROPOSED
     assert result["concept_id"] == "c1"
 
 
-def test_approved_type_memory_promotes_exact_match_without_mutating_source():
+def test_full_concept_approval_promotes_exact_match_without_mutating_source():
     concepts = [{"concept_id": "c1", "canonical_name": "焊接电流", "aliases": ["电流"]}]
     initial = MemorySnapshot.build(concepts, [])
-    reviewed = MemorySnapshot.build(concepts, [], [{
+    type_only = MemorySnapshot.build(concepts, [], [{
         "status": "APPROVED",
         "proposal_kind": "TYPE_REVIEW",
         "concept_id": "c1",
         "type": "object",
     }])
-    assert ConceptRegistry(initial).resolve_exact("电流", concept_type="object")["status"] == AlignmentStatus.TYPE_REVIEW
+    reviewed = MemorySnapshot.build(concepts, [], [{
+        "status": "APPROVED",
+        "concept": {
+            "concept_id": "c1", "canonical_name": "焊接电流",
+            "aliases": ["电流"], "type": "object",
+        },
+    }])
+    assert ConceptRegistry(initial).resolve_exact("电流", concept_type="object")["status"] == AlignmentStatus.PROPOSED
+    # An APPROVED type review is an explicit approval: it must resolve as registered.
+    assert ConceptRegistry(type_only).resolve_exact("电流", concept_type="object")["status"] == AlignmentStatus.MATCHED
     assert ConceptRegistry(reviewed).resolve_exact("电流", concept_type="object")["status"] == AlignmentStatus.MATCHED
     assert "type" not in concepts[0]
 
 
 def test_reviewed_alias_enters_next_memory_snapshot():
-    concepts = [{"concept_id": "c1", "canonical_name": "电池组", "aliases": [], "type": "object"}]
+    concepts = [{
+        "concept_id": "c1", "canonical_name": "电池组", "aliases": [],
+        "type": "object", "registration_status": "APPROVED",
+    }]
     reviewed = MemorySnapshot.build(concepts, [], [{
         "status": "APPROVED",
         "proposal_kind": "ALIAS",

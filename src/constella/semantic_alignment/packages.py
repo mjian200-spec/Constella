@@ -124,6 +124,7 @@ class SemanticPackageBuilder:
                 continue
             case = {
                 "object_id": source["object_id"],
+                "tier": str(source["tier"]),
                 "name": source["name"],
                 "raw_variants": source["raw_variants"],
                 "frequency": source["frequency"],
@@ -140,14 +141,18 @@ class SemanticPackageBuilder:
         for tier in sorted(grouped, key=lambda value: TIER_ORDER[PackageTier(value)]):
             cases = sorted(grouped[tier], key=lambda row: (-int(row["frequency"]), row["object_id"]))
             current: list[dict[str, Any]] = []
+            # Serialized size grows linearly with each appended case; track it
+            # incrementally instead of re-dumping the whole package per case.
+            current_size = self._package_payload_base_size(tier)
             for case in cases:
-                candidate = self._package_payload(tier, [*current, case])
-                size = len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":")))
-                if current and (len(current) >= objects_per_package or size > max_package_chars):
+                case_size = len(json.dumps(case, ensure_ascii=False, separators=(",", ":"))) + 1
+                if current and (len(current) >= objects_per_package or current_size + case_size > max_package_chars):
                     packages.append(self._finalize_package(tier, current))
                     current = [case]
+                    current_size = self._package_payload_base_size(tier) + case_size
                 else:
                     current.append(case)
+                    current_size += case_size
             if current:
                 packages.append(self._finalize_package(tier, current))
         return packages
@@ -350,6 +355,9 @@ class SemanticPackageBuilder:
             "memory_version": self.memory.version,
             "cases": cases,
         }
+
+    def _package_payload_base_size(self, tier: str) -> int:
+        return len(json.dumps(self._package_payload(tier, []), ensure_ascii=False, separators=(",", ":")))
 
     def _finalize_package(self, tier: str, cases: list[dict[str, Any]]) -> dict[str, Any]:
         payload = self._package_payload(tier, cases)

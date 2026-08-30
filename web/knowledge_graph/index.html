@@ -43,10 +43,18 @@
       <section class="graph-panel">
         <div class="graph-toolbar">
           <div>
-            <span class="eyebrow">GRAPH</span>
-            <h2 id="graph-title">概念结构总览</h2>
+            <span id="view-eyebrow" class="eyebrow">HIERARCHY</span>
+            <h2 id="graph-title">概念层级树</h2>
           </div>
-          <div class="graph-actions">
+          <div class="view-switch" aria-label="视图模式">
+            <button data-view="tree" class="active">层级树</button>
+            <button data-view="graph">关系图</button>
+          </div>
+          <div id="tree-actions" class="graph-actions">
+            <button id="collapse-all">收起</button>
+            <button id="expand-all">展开</button>
+          </div>
+          <div id="graph-actions" class="graph-actions" hidden>
             <button id="fit">适应画布</button>
             <button id="zoom-out" aria-label="缩小">−</button>
             <button id="zoom-in" aria-label="放大">＋</button>
@@ -55,12 +63,10 @@
         <div id="graph" class="graph" role="application" aria-label="交互式知识图谱">
           <div class="loading">正在载入图谱…</div>
         </div>
-        <div class="legend" aria-label="图例">
-          <span><i class="concept"></i>概念</span>
-          <span><i class="rule"></i>规则</span>
-          <span><i class="state"></i>状态表达式</span>
-          <span><i class="transition"></i>状态迁移</span>
-          <span class="hint">滚轮缩放 · 拖动画布 · 点击节点查看</span>
+        <div id="legend" class="legend" aria-label="图例">
+          <span><i class="is-a"></i>IS_A 子类</span>
+          <span><i class="part-of"></i>PART_OF 组成</span>
+          <span class="hint">父概念在上 · 点击概念查看详情</span>
         </div>
       </section>
 

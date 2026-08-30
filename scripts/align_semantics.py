@@ -33,7 +33,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _output_suffix(args: argparse.Namespace) -> str:
     if args.object_limit is not None:
-        return "_trial"
+        return f"_trial_limit_{args.object_limit}"
     if args.max_tier != PackageTier.H3:
         return f"_through_{str(args.max_tier).lower()}"
     return ""
@@ -87,6 +87,12 @@ def main() -> int:
         "source_raw_object_variant_count": len({row["raw_object"] for row in builder.state_rows.values()}),
         "memory_version": memory.version,
         "registry_concept_count": len(memory.concepts),
+        "candidate_catalog_count": sum(
+            row.get("registration_status") != "APPROVED" for row in memory.concepts
+        ),
+        "registered_concept_count": sum(
+            row.get("registration_status") == "APPROVED" for row in memory.concepts
+        ),
         "approved_memory_count": memory.approved_memory_count,
         "package_parameters": {
             "candidates_per_object": args.candidates_per_object,

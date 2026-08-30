@@ -8,21 +8,25 @@ from .models import AlignmentStatus, ConceptType, MatchMethod, ProposalKind
 from .registry import ConceptRegistry, normalize_text
 
 
-_NUMBER = r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)"
+_NUMBER = r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?"
 _KNOWN_UNITS = (
     "°C", "℃", "K", "mA", "kA", "A", "mV", "kV", "V", "μm", "µm", "mm", "cm", "m",
     "ms", "min", "s", "h", "%",
 )
+# Sorted longest-first so "ms"/"min" win over the bare "m" prefix.
 _UNIT = (
-    "(?:" + "|".join(re.escape(value) for value in _KNOWN_UNITS)
+    "(?:" + "|".join(
+        re.escape(value) for value in sorted(_KNOWN_UNITS, key=len, reverse=True)
+    )
     + r"|[A-Za-zμµΩ°℃%][A-Za-z0-9μµΩ°℃%·/*().^-]{0,20})"
 )
 _RANGE = re.compile(
-    rf"(?P<low>{_NUMBER})\s*(?:~|～|—|–|至|到)\s*(?P<high>{_NUMBER})\s*(?P<unit>{_UNIT})?",
+    rf"(?P<low>{_NUMBER})\s*(?P<low_unit>{_UNIT})?\s*(?:~|～|—|–|至|到)\s*"
+    rf"(?P<high>{_NUMBER})\s*(?P<unit>{_UNIT})?",
     re.IGNORECASE,
 )
 _COMPARE = re.compile(
-    rf"(?P<operator>大于等于|小于等于|不低于|不高于|不少于|不超过|超过|大于|高于|低于|小于|等于|≥|≤|>=|<=|>|<|=)\s*"
+    rf"(?P<operator>不大于|不小于|大于等于|小于等于|不低于|不高于|不少于|不超过|超过|大于|高于|低于|小于|等于|≥|≤|>=|<=|>|<|=)\s*"
     rf"(?P<value>{_NUMBER})\s*(?P<unit>{_UNIT})?",
     re.IGNORECASE,
 )
@@ -30,9 +34,11 @@ _SCALAR = re.compile(rf"(?P<value>{_NUMBER})\s*(?P<unit>{_UNIT})", re.IGNORECASE
 
 _OPERATOR_MAP = {
     "超过": (">", False), "大于": (">", False), "高于": (">", False), ">": (">", False),
-    "大于等于": (">", True), "不低于": (">", True), "不少于": (">", True), "≥": (">", True), ">=": (">", True),
+    "大于等于": (">", True), "不低于": (">", True), "不少于": (">", True), "不小于": (">", True),
+    "≥": (">", True), ">=": (">", True),
     "低于": ("<", False), "小于": ("<", False), "<": ("<", False),
-    "小于等于": ("<", True), "不高于": ("<", True), "不超过": ("<", True), "≤": ("<", True), "<=": ("<", True),
+    "小于等于": ("<", True), "不高于": ("<", True), "不超过": ("<", True), "不大于": ("<", True),
+    "≤": ("<", True), "<=": ("<", True),
     "等于": ("=", True), "=": ("=", True),
 }
 
@@ -83,7 +89,14 @@ class StateNormalizer:
         result = {
             "raw_state": raw,
             "canonical_surface": canonical_surface,
-            "state_concept_id": resolution.get("concept_id"),
+            "state_concept_id": (
+                resolution.get("concept_id")
+                if resolution["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW}
+                else None
+            ),
+            "candidate_concept_id": (
+                resolution.get("concept_id") if resolution["status"] == AlignmentStatus.PROPOSED else None
+            ),
             "state_candidates": resolution.get("candidates", []),
             "match_method": resolution.get("match_method", MatchMethod.NONE),
             "operator_family": quantity_result.get("operator_family") if quantity_result else None,
@@ -98,6 +111,15 @@ class StateNormalizer:
                 "concept_type": ConceptType.STATE,
                 "concept_id": resolution["concept_id"],
                 "canonical_name": canonical_surface,
+            }
+        elif resolution["status"] == AlignmentStatus.PROPOSED and resolution.get("concept_id"):
+            concept_id = str(resolution["concept_id"])
+            result["proposal"] = {
+                "proposal_kind": ProposalKind.CONCEPT_APPROVAL,
+                "concept_type": ConceptType.STATE,
+                "concept_id": concept_id,
+                "canonical_name": str(self.registry.concepts[concept_id].get("canonical_name") or surface),
+                "raw_object": raw_object,
             }
         elif resolution["status"] == AlignmentStatus.EXPRESSION_ONLY and frequency >= self.proposal_threshold:
             proposal_kind = self._proposal_kind(surface, quantity_result)
@@ -114,12 +136,15 @@ class StateNormalizer:
 
     def _resolve(self, values: list[str]) -> dict[str, Any]:
         ambiguous: list[dict[str, Any]] = []
+        proposed: list[dict[str, Any]] = []
         for value in values:
             resolved = self.registry.resolve_exact(value, concept_type=ConceptType.STATE)
             if resolved["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW}:
                 return resolved
             if resolved["status"] == AlignmentStatus.AMBIGUOUS:
                 ambiguous.extend(resolved["candidates"])
+            elif resolved["status"] == AlignmentStatus.PROPOSED:
+                proposed.append(resolved)
         if ambiguous:
             unique = {row["id"]: row for row in ambiguous}
             return {
@@ -128,6 +153,8 @@ class StateNormalizer:
                 "match_method": MatchMethod.NONE,
                 "candidates": list(unique.values()),
             }
+        if proposed:
+            return proposed[0]
         return {
             "status": AlignmentStatus.EXPRESSION_ONLY,
             "concept_id": None,
@@ -156,11 +183,13 @@ class StateNormalizer:
             prefix = surface[:match.start()].strip(" （([")
             suffix = surface[match.end():].strip(" ）)]时")
             dimension = self._dimension(prefix, suffix)
-            unit = str(match.groupdict().get("unit") or "")
+            groups = match.groupdict()
+            unit = str(groups.get("unit") or "")
             if kind == "range":
-                low = self._convert(match.group("low"), unit)
-                high = self._convert(match.group("high"), unit)
-                canonical_unit = low[1] if low else unit or None
+                low_unit = str(groups.get("low_unit") or "") or unit
+                low = self._convert(match.group("low"), low_unit)
+                high = self._convert(match.group("high"), unit or low_unit)
+                canonical_unit = low[1] if low else (unit or low_unit or None)
                 quantity = {
                     "lower": low[0] if low else match.group("low"),
                     "upper": high[0] if high else match.group("high"),

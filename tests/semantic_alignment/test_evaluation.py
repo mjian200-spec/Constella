@@ -13,7 +13,7 @@ from constella.semantic_alignment.evaluation import (
 def _builder(*, typed: bool = True) -> SemanticPackageBuilder:
     concepts = [{
         "concept_id": "current", "canonical_name": "焊接电流", "aliases": ["电流"],
-        **({"type": "object"} if typed else {}),
+        **({"type": "object", "registration_status": "APPROVED"} if typed else {}),
     }]
     inputs = AlignmentInputs(
         concepts=concepts,
@@ -62,8 +62,11 @@ def test_candidate_recall_includes_mechanical_resolutions():
 def test_reviewed_type_promotes_untyped_exact_case():
     before = _builder(typed=False)
     reviewed = [{
-        "status": "APPROVED", "proposal_kind": "TYPE_REVIEW",
-        "concept_id": "current", "type": "object",
+        "status": "APPROVED",
+        "concept": {
+            "concept_id": "current", "canonical_name": "焊接电流",
+            "aliases": ["电流"], "type": "object",
+        },
     }]
     after = SemanticPackageBuilder(
         before.inputs,

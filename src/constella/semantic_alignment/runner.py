@@ -132,7 +132,7 @@ class SemanticAlignmentRunner:
         return final, report
 
     def _process(self, package: dict[str, Any]) -> dict[str, Any]:
-        fingerprint = self._fingerprint(package, self.prompt)
+        prompt_fingerprint = self._prompt_fingerprint(self.prompt)
         messages = [
             {"role": "system", "content": self.prompt["system"]},
             {"role": "user", "content": json.dumps(package, ensure_ascii=False)},
@@ -161,7 +161,7 @@ class SemanticAlignmentRunner:
                     "memory_version": package["memory_version"],
                     "status": "success",
                     "attempt_count": attempt,
-                    "input_fingerprint": fingerprint,
+                    "prompt_fingerprint": prompt_fingerprint,
                     "covered_item_count": covered,
                     "output": value,
                 }
@@ -184,7 +184,7 @@ class SemanticAlignmentRunner:
             "memory_version": package["memory_version"],
             "status": "failed",
             "attempt_count": 2,
-            "input_fingerprint": fingerprint,
+            "prompt_fingerprint": prompt_fingerprint,
             "covered_item_count": 0,
             "errors": errors,
             "raw_outputs": raw_outputs,
@@ -255,9 +255,17 @@ class SemanticAlignmentRunner:
             return None
         try:
             result = json.loads(path.read_text(encoding="utf-8"))
-            if result.get("input_fingerprint") != self._fingerprint(package, self.prompt):
-                return None
             if result.get("status") != "success":
+                return None
+            if result.get("prompt_fingerprint") is not None:
+                # New-format cache: package_id is a content hash of the package,
+                # so comparing it plus the prompt hash skips re-serializing the
+                # whole package payload.
+                if result.get("package_id") != package["package_id"]:
+                    return None
+                if result.get("prompt_fingerprint") != self._prompt_fingerprint(self.prompt):
+                    return None
+            elif result.get("input_fingerprint") != self._fingerprint(package, self.prompt):
                 return None
             self._validate(package, result["output"])
             return result
@@ -286,4 +294,10 @@ class SemanticAlignmentRunner:
         payload = {"package": package, "prompt": prompt}
         return hashlib.sha256(json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+
+    @staticmethod
+    def _prompt_fingerprint(prompt: dict[str, Any]) -> str:
+        return hashlib.sha256(json.dumps(
+            prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode()).hexdigest()
