@@ -161,6 +161,13 @@ class ConceptRegistry:
                 self.parents[child].append(parent)
         signatures = {concept_id: self._signature(concept_id) for concept_id in self.concepts}
         self.ngram = CharNgramIndex(signatures)
+        name_signatures = {
+            concept_id: "\n".join(str(value) for value in [
+                row.get("canonical_name") or "", *(row.get("aliases") or []),
+            ] if value)
+            for concept_id, row in self.concepts.items()
+        }
+        self.name_ngram = CharNgramIndex(name_signatures)
         self.lexical_terms: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for key, values in self.exact_index.items():
             for concept_id, _method in values:
@@ -169,6 +176,10 @@ class ConceptRegistry:
                     self.lexical_terms[concept_type].append((key, concept_id))
         for concept_type in self.lexical_terms:
             self.lexical_terms[concept_type].sort(key=lambda item: (-len(item[0]), item[0], item[1]))
+        self.candidate_terms = sorted(
+            ((term, concept_id) for term, rows in self.exact_index.items() for concept_id, _method in rows),
+            key=lambda item: (-len(item[0]), item[0], item[1]),
+        )
 
     def __contains__(self, concept_id: str) -> bool:
         return concept_id in self.concepts
@@ -221,19 +232,71 @@ class ConceptRegistry:
     def candidates(self, text: str, *, concept_type: str, top_k: int = 6) -> list[dict[str, Any]]:
         result = self.exact(text, concept_type=concept_type)
         seen = {row["id"] for row in result}
-        for concept_id, score in self.ngram.query(text, top_k=max(top_k * 4, top_k)):
+        remaining = max(0, top_k - len(result))
+        if not remaining:
+            return result
+        name_slots = min(remaining, max(1, round(top_k * 0.625)))
+        initial_name_count = len(result)
+        self._append_contained_name_candidates(
+            result, seen, text, concept_type=concept_type, limit=name_slots,
+        )
+        self._append_fuzzy_candidates(
+            result, seen, self.name_ngram.query(text, top_k=max(top_k * 4, top_k)),
+            concept_type=concept_type, limit=max(0, name_slots - (len(result) - initial_name_count)),
+            match_method="FUZZY_NAME",
+        )
+        self._append_fuzzy_candidates(
+            result, seen, self.ngram.query(text, top_k=max(top_k * 4, top_k)),
+            concept_type=concept_type, limit=top_k,
+            match_method="FUZZY_CONTEXT",
+        )
+        return result
+
+    def _append_contained_name_candidates(
+        self,
+        result: list[dict[str, Any]],
+        seen: set[str],
+        text: str,
+        *,
+        concept_type: str,
+        limit: int,
+    ) -> None:
+        normalized = normalize_text(text)
+        added = 0
+        for term, concept_id in self.candidate_terms:
+            if added >= limit:
+                break
+            if term not in normalized or concept_id in seen:
+                continue
+            row_type = str(self.concepts[concept_id].get("type") or "")
+            if row_type and row_type != concept_type:
+                continue
+            result.append(self.payload(concept_id, match_method="CONTAINED_NAME", score=float(len(term))))
+            seen.add(concept_id)
+            added += 1
+
+    def _append_fuzzy_candidates(
+        self,
+        result: list[dict[str, Any]],
+        seen: set[str],
+        candidates: list[tuple[str, float]],
+        *,
+        concept_type: str,
+        limit: int,
+        match_method: str,
+    ) -> None:
+        added = 0
+        for concept_id, score in candidates:
+            if added >= limit or len(result) >= limit and match_method == "FUZZY_CONTEXT":
+                break
             if concept_id in seen:
                 continue
             row_type = str(self.concepts[concept_id].get("type") or "")
             if row_type and row_type != concept_type:
                 continue
-            result.append(self.payload(
-                concept_id, match_method="FUZZY", score=score,
-            ))
+            result.append(self.payload(concept_id, match_method=match_method, score=score))
             seen.add(concept_id)
-            if len(result) >= top_k:
-                break
-        return result
+            added += 1
 
     def lexical_coverage(self, text: str, *, concept_type: str) -> float:
         normalized = normalize_text(text)

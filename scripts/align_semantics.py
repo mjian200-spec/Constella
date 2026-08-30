@@ -56,7 +56,7 @@ def main() -> int:
     )
     parser.add_argument("--object-limit", type=int, help="Limit selected LLM packages; writes trial-suffixed outputs.")
     parser.add_argument("--proposal-threshold", type=int, default=5)
-    parser.add_argument("--candidates-per-object", type=int, default=8)
+    parser.add_argument("--candidates-per-object", type=int, default=6)
     parser.add_argument("--objects-per-package", type=int, default=16)
     parser.add_argument("--max-package-chars", type=int, default=40_000)
     parser.add_argument("--workers", type=int)

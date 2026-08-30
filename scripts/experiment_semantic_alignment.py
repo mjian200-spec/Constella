@@ -37,6 +37,7 @@ def main() -> int:
     parser.add_argument("--objects-grid", type=_integers, default=_integers("8,12,16"))
     parser.add_argument("--chars-grid", type=_integers, default=_integers("25000,40000"))
     parser.add_argument("--recall-tolerance", type=float, default=0.002)
+    parser.add_argument("--baseline", help="Prior experiment JSON; emits recommended-result deltas.")
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -85,6 +86,32 @@ def main() -> int:
         "recommended": recommended,
         "experiments": rows,
     }
+    if args.baseline:
+        baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
+        previous = baseline.get("recommended") or {}
+        previous_retrieval = previous.get("retrieval") or {}
+        previous_package = previous.get("package") or {}
+        current_retrieval = (recommended or {}).get("retrieval") or {}
+        current_package = (recommended or {}).get("package") or {}
+        report["comparison"] = {
+            "baseline": str(args.baseline),
+            "recommended_delta": {
+                "candidate_recall": round(
+                    float(current_retrieval.get("candidate_recall") or 0)
+                    - float(previous_retrieval.get("candidate_recall") or 0), 4,
+                ),
+                "weighted_candidate_recall": round(
+                    float(current_retrieval.get("weighted_candidate_recall") or 0)
+                    - float(previous_retrieval.get("weighted_candidate_recall") or 0), 4,
+                ),
+                "package_count": int(current_package.get("package_count") or 0)
+                - int(previous_package.get("package_count") or 0),
+                "input_chars_total": int(current_package.get("input_chars_total") or 0)
+                - int(previous_package.get("input_chars_total") or 0),
+                "input_chars_p95": float(current_package.get("input_chars_p95") or 0)
+                - float(previous_package.get("input_chars_p95") or 0),
+            },
+        }
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         output = Path(args.output)
