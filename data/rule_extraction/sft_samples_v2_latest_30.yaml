@@ -4,7 +4,7 @@ language: zh-CN
 task: 从最新语义上下文包抽取规则DSL
 source_context_run: outputs/context_builder_semantic_qwen38_27b_20260829
 source_rule_run: outputs/rule_extraction_full_20260829
-notes: 输入由当前MultimodalMessageBuilder从不可变语义上下文cache生成；输出为人工复核金标。
+notes: 这是最新语义上下文包第31—60条样本的人工标注层。input由构建脚本从不可变cache按当前MultimodalMessageBuilder生成，避免手抄丢失包条件、来源Unit、作用域和资源文字化内容。
 source_issue_log:
 - context_id: context_000008
   issue: 核心正文开头缺少回路首个组成项，金标不补全回路组成。
@@ -301,6 +301,12 @@ samples:
       题注: 表2-12 双逆变式方波交流弧焊机在采用不同稳弧措施时能实现可靠再引燃的最小焊接电流值\n表格正文:\n<table><tr><td>试验条件</td><td>稳定焊接的最小焊接电流值/A</td></tr><tr><td>无</td><td>120</td></tr><tr><td>加电压脉冲(120V)</td><td>70</td></tr><tr><td>加电流脉冲(300A)</td><td>20</td></tr><tr><td>同时加电压脉冲(120V)和电流脉冲(300A)</td><td>10</td></tr></table>\n\
       原始文字:\n<table><tr><td>试验条件</td><td>稳定焊接的最小焊接电流值/A</td></tr><tr><td>无</td><td>120</td></tr><tr><td>加电压脉冲(120V)</td><td>70</td></tr><tr><td>加电流脉冲(300A)</td><td>20</td></tr><tr><td>同时加电压脉冲(120V)和电流脉冲(300A)</td><td>10</td></tr></table>\n\
       资源标题: 表2-12 双逆变式方波交流弧焊机在采用不同稳弧措施时能实现可靠再引燃的最小焊接电流值\n资源描述: 表格包含两列，左列为“试验条件”，右列为“稳定焊接的最小焊接电流值/A”。数据行对应关系如下：试验条件为“无”时，电流值为120；试验条件为“加电压脉冲(120V)”时，电流值为70；试验条件为“加电流脉冲(300A)”时，电流值为20；试验条件为“同时加电压脉冲(120V)和电流脉冲(300A)”时，电流值为10。"
+    images:
+    - unit_id: unit_000734
+      type: table
+      page: 64
+      caption: 表2-12 双逆变式方波交流弧焊机在采用不同稳弧措施时能实现可靠再引燃的最小焊接电流值
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/194429fe24ec16585257f4501bfc45299fcdc973db25855a09c9c51e10299774.jpg
   output: '规则组1
 
     C: 焊接方法|交流TIG焊 + 焊接对象|铝
@@ -344,6 +350,12 @@ samples:
       \n资源文字化:\n[unit_000748; type=figure; page=65]\n题注: 图2-54 埋弧焊的电弧静特性曲线\n原始文字:\n图2-54 埋弧焊的电弧静特性曲线\n资源标题: 图2-54 埋弧焊的电弧静特性曲线\n\
       资源描述: 该图为二维坐标图，展示了埋弧焊的电弧静特性。横坐标为焊接电流 $I_a$，单位 A，刻度范围 0 至 800，间隔 200。纵坐标为电弧电压 $U_a$，单位 V，刻度范围 0 至 60，间隔 20。图中包含四条向下倾斜的曲线，分别对应不同的电弧长度（单位\
       \ mm），数值标注在曲线左端：8.6、5.6、3.5、2.0。曲线显示随着焊接电流增加，电弧电压降低。图内右上角标注文字“焊丝接正(EP)”。"
+    images:
+    - unit_id: unit_000748
+      type: figure
+      page: 65
+      caption: 图2-54 埋弧焊的电弧静特性曲线
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/4c6a086f583f8f786d5180f28174f28bbded7ae11152d70a2dd090a79795eb48.jpg
   output: '规则组1
 
     C: 电弧能量损耗|存在周边散热、金属蒸气及等离子流附加损耗
@@ -418,6 +430,12 @@ samples:
 
       资源描述: 该图为二维坐标图，展示了电弧电压与焊接电流的关系。纵轴为“电弧电压 Ua / V”，刻度范围从2到14，间隔为2；横轴为“焊接电流 Ia / A”，刻度范围从20到90，间隔为10。图中包含一个由黑点连接而成的闭合环形曲线（类似椭圆），表示电弧动特性。图内标注了实验参数：电弧长度
       1.2mm，钨极直径 3.2mm，氩气流量 9L/min，变动焊接电流频率 120Hz。'
+    images:
+    - unit_id: unit_000798
+      type: figure
+      page: 70
+      caption: b)  图2-61 直流脉动电流的电弧动特性曲线
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/27b6c07fd31871f338dff1461325477283c066a4fbf2a11d27298b4136c41c5c.jpg
   output: '规则组1
 
     C: 焊接电流类型|直流脉动
@@ -549,6 +567,12 @@ samples:
       \n支撑内容:\n[unit_000939; type=title; page=84]\n2.6.1 电弧自身磁场的作用\n\n资源文字化:\n[unit_000956; type=figure; page=85]\n题注: 图2-72\
       \ 电弧偏吹起因示意图 图2-71 焊条倾斜时电弧刚直性的表现\n原始文字:\n图2-72 电弧偏吹起因示意图 图2-71 焊条倾斜时电弧刚直性的表现\n资源标题: 电弧偏吹起因示意图\n资源描述: 图中展示了一根垂直放置的焊条，内部标有向下的箭头和文字“电流”。焊条下端与下方的水平基座之间形成电弧。电弧左侧排列着两列共8个带“+”号的圆圈，右侧排列着3个带“•”号的圆圈。左侧圆圈群旁标注“$F_{左}$”，并有一个指向右侧（指向电弧）的箭头；右侧圆圈群旁标注“$F_{右}$”，并有一个指向左侧（指向电弧）的箭头。图上方标注不等式“$F_{左}\
       \ > F_{右}$”。电弧的形态呈现向右侧弯曲，且右侧弧面画有短斜线。"
+    images:
+    - unit_id: unit_000956
+      type: figure
+      page: 85
+      caption: 图2-72 电弧偏吹起因示意图 图2-71 焊条倾斜时电弧刚直性的表现
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/256c500b1948d6b480b66018cb9fa6879a086bc149dd88ad4d10d7e233987556.jpg
   output: '规则组1
 
     C: 焊接对象|电弧
@@ -791,6 +815,12 @@ samples:
       \n支撑内容:\n[unit_001186; type=title; page=104]\n3.2.3 熔化极气体保护焊的主要熔滴过渡形式\n\n资源文字化:\n[unit_001297; type=figure; page=114]\n\
       题注: 图3-34 射流过渡临界\n原始文字:\n图3-34 射流过渡临界\n资源标题: 图3-34 射流过渡临界\n资源描述: 该图为二维直角坐标系散点图。横轴表示“焊丝直径 /mm”，刻度范围从0.6至1.6，间隔为0.2。纵轴表示“Ic\
       \ /A”，刻度范围从180至280，间隔为20。图中包含四个空心圆点数据，大致分布在(0.8, 190)、(1.0, 220)、(1.2, 230)和(1.6, 265)附近。一条实线穿过数据点，呈正斜率直线趋势，表明纵轴变量随横轴变量增加而增加。"
+    images:
+    - unit_id: unit_001297
+      type: figure
+      page: 114
+      caption: 图3-34 射流过渡临界
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/4bec59672d36a39636494d653cef41325c48d31a7a483032e7de9e4d62e3a57a.jpg
   output: '规则组1
 
     C: 熔滴过渡形式|射流过渡
@@ -900,6 +930,12 @@ samples:
       资源标题: 表 3-7 钢材 A、B 的化学组成
 
       资源描述: 表格展示了钢材A和B的化学成分数据。表头第一列标注为“钢材 成分”，后续列依次为C、Si、Mn、Ni、Cr、Mo、V、S、P、[O]、[N]、Ca。数据行包含两种钢材：钢材A的成分数值依次为0.40、1.05、1.00、1.88、0.71、0.58、0.1、0.007、0.008、0.009、0.011、0.002；钢材B的成分数值依次为0.39、1.00、1.05、1.80、0.76、0.61、0.1、0.005、0.008、0.005、0.004、0.002。'
+    images:
+    - unit_id: unit_001674
+      type: table
+      page: 149
+      caption: 表 3-7 钢材 A、B 的化学组成
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/17ac59e3aa843869b04ecfa01807531fdc2a7cfc282d916e7d7a7fa7c89eeec3.jpg
   output: '规则组1
 
     C: 焊接方法|电弧焊
@@ -1036,6 +1072,12 @@ samples:
       3. **C区（烧穿）**：位于右下方，对应低焊接速度、高焊接电流。示意图显示板材被熔穿，形成孔洞。
 
       4. **D区（咬边）**：位于右上方，对应高焊接速度、高焊接电流。示意图显示焊缝边缘母材被熔化后未得到填充，形成凹陷。'
+    images:
+    - unit_id: unit_001736
+      type: figure
+      page: 154
+      caption: 图3-90 薄板对接不规则焊道的产生
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/dea9ff41f21e392dd1271de45fa3c45bc94113b54a18dc02231e22bc95ed6747.jpg
   output: '规则组1
 
     C: 焊接对象|薄板对接焊 + 参数区域|A区
@@ -1212,6 +1254,12 @@ samples:
       资源标题: 图4-4 焊接电源的外特性
 
       资源描述: 该图为二维坐标图，横轴表示焊接电流，纵轴表示电弧电压，原点标记为O。图中包含一条实线曲线，标注为“TIG焊电弧负载曲线”，该曲线从左下方向右上方倾斜。图中还有一条未标注的曲线，起始于纵轴较高位置，先是一段陡峭的虚线下降，随后转为实线，呈现先缓慢下降后急剧下降的形态。图下方有标签“b)”。'
+    images:
+    - unit_id: unit_001838
+      type: figure
+      page: 164
+      caption: 图4-4 焊接电源的外特性
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/b5bb406bf58168fc93a90ebc5acc44e72a9b3a6e584a1a73815e39294fbda9b5.jpg
   output: '规则组1
 
     C: 无
@@ -1522,6 +1570,12 @@ samples:
       4. 板厚 2.3mm 时，电流 140~170A，焊丝直径 2.4mm，焊接速度 300~450mm/min，气体流量 4~5L/min。
 
       5. 板厚 3.2mm 时，电流 150~200A，焊丝直径 3.2mm，焊接速度 250~300mm/min，气体流量 4~5L/min。'
+    images:
+    - unit_id: unit_002161
+      type: table
+      page: 196
+      caption: 表 4-17 普通钢对接接头 TIG 手工焊焊接参数
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/2aa5f19ec70837913c202de84306cac16617380d0f460fa1c14003c47054467b.jpg
   output: '规则组1
 
     C: 焊接方法|TIG手工焊 + 母材|普通钢 + 接头形式|对接接头

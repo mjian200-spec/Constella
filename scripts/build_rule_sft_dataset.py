@@ -37,6 +37,21 @@ def main() -> None:
         generation = json.loads(generation_path.read_text(encoding="utf-8"))
         prompt_id = generation["prompt_id"]
         route = prompt_id.removeprefix("rule_generator_routed__").replace("__", "+")
+        input_data = {"text": message_builder.context_content(package)[0]["text"]}
+        images = [
+            {
+                "unit_id": asset.unit.id,
+                "type": asset.unit.type,
+                "page": asset.unit.source.get("page"),
+                "caption": asset.caption,
+                "path": asset.resolved_path,
+            }
+            for asset in package.assets
+            if asset.resolved_path
+        ]
+        if images:
+            input_data["images"] = images
+
         samples.append({
             "id": package_id,
             "route": route,
@@ -48,18 +63,21 @@ def main() -> None:
                 "prompt_id": prompt_id,
                 "prompt_version": generation["prompt_version"],
             },
-            "input": {"text": message_builder.context_content(package)[0]["text"]},
+            "input": input_data,
             "output": annotation["output"],
         })
 
     dataset = {
         "schema_version": 2,
-        "dataset": "constella_rule_extraction_sft_latest_30",
+        "dataset": annotation_data.get("dataset", "constella_rule_extraction_sft_latest_30"),
         "language": "zh-CN",
         "task": "从最新语义上下文包抽取规则DSL",
         "source_context_run": annotation_data["source_context_run"],
         "source_rule_run": annotation_data["source_rule_run"],
-        "notes": "输入由当前MultimodalMessageBuilder从不可变语义上下文cache生成；输出为人工复核金标。",
+        "notes": annotation_data.get(
+            "notes",
+            "输入由当前MultimodalMessageBuilder从不可变语义上下文cache生成；输出为人工复核金标。",
+        ),
         "source_issue_log": annotation_data.get("source_issue_log", []),
         "samples": samples,
     }

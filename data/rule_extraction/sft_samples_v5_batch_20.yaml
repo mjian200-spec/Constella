@@ -1,0 +1,1076 @@
+schema_version: 2
+dataset: constella_rule_extraction_sft_batch5_20
+language: zh-CN
+task: 从最新语义上下文包抽取规则DSL
+source_context_run: outputs/context_builder_semantic_qwen38_27b_20260829
+source_rule_run: outputs/rule_extraction_full_20260829
+notes: 第81—100条人工复核样本，按章节与结构路由分层选择真实语义上下文包并逐条订正。
+source_issue_log:
+- context_id: context_000214
+  issue: 核心正文以“从而产生”截断，金标只保留此前闭合的CO2压缩、电弧集中和电流密度关系。
+- context_id: context_000404
+  issue: 核心正文末尾开始新的活性剂分解机理但被截断，金标不补写其后作用。
+- context_id: context_001642
+  issue: 模型缓存混入核心正文之外的TIG及材料选择内容；金标只依据本包单一气体与混合气体段落。
+- context_id: context_002485
+  issue: 核心正文只给出薄铝工件的两个频率范围；金标不采用模型补造的厚度变化趋势。
+samples:
+- id: context_000021
+  route: text
+  difficulty_tags:
+  - 辐射电离链
+  - 方法比较
+  - 共同场景
+  construction_rationale: 一般焊接电弧是本段共同场景。电弧发出多频率辐射并向气体粒子供能，中性粒子接受能量后可能激励或电离，两种结果分别表达；电离再产生带电粒子并维持导电。最后保留光辐射制造带电粒子次要于碰撞传递的同属性比较，不把远距阈值候选加入C。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000021.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000021
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: "上下文包编号: context_000021\n\n标题路径:\n第2章 焊接电弧 > 2.1 电弧的物理基础 > 2.1.2 带电粒子的产生和消失\n\n包条件（已由上游确定作用域）:\n- [constraint_000004]\
+      \ 电流: 低电压和大电流\n  来源 Unit: unit_000194\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_000194\", \"\
+      end_unit_id\": \"unit_000470\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_000194; type=passage; page=18]\n\
+      \  由图2-2可见，在不同电流下有不同的放电形式。由于放电条件的影响，放电形式也将发生转化。在低电压和大电流条件下，将成为电弧放电。在电弧放电状态下，电弧中充满离子、电子、负离子和中性粒子等，为了保证电弧稳定，必须不断地产生带电粒子（离子、电子）。下面着重阐述电弧空间离子与电子的产生机理。\n\
+      - [constraint_000006] 焊接电流: 焊接电流较小\n  来源 Unit: unit_000199\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\"\
+      : \"unit_000199\", \"end_unit_id\": \"unit_000480\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_000199;\
+      \ type=passage; page=19]\n  用电子伏（eV）为单位的能量转换为数值上相等的电压来处理，单位为伏（V）。因此在实际中常直接用电离电压（单位为V）来表示气体电离的难易。以伏（V）表示的电离电压在数值上等于以电子伏表示的电离能。要使中性气体粒子失去第二个电子则需要更大的电离电压，称为二次电离电压，生成的离子称为二价离子，这种电离称为二次电离，依此类推。普通焊接电弧中当焊接电流较小时只存在一次电离，而在大电流和压缩焊接电弧中，电弧温度达到几万度时可以出现二次或三次电离，即使这种情况下，一次电离仍居主要地位，所以一般书籍中只列出各种气体一次电离的电离电压。自由状态气体原子的一次电离电压在3.9V(Cs)到24.5V(He)之间，二次电离电压在十几伏到几百伏之间。一次电离电压低的粒子，二次电离电压不一定还低，这由粒子的原子结构决定。电弧气氛中可能遇到的气体粒子的电离电压见表2-1。\n\
+      - [constraint_000007] 温度: 几万度时可以出现二次或三次电离\n  来源 Unit: unit_000199\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\"\
+      : \"unit_000199\", \"end_unit_id\": \"unit_000278\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_000199;\
+      \ type=passage; page=19]\n  用电子伏（eV）为单位的能量转换为数值上相等的电压来处理，单位为伏（V）。因此在实际中常直接用电离电压（单位为V）来表示气体电离的难易。以伏（V）表示的电离电压在数值上等于以电子伏表示的电离能。要使中性气体粒子失去第二个电子则需要更大的电离电压，称为二次电离电压，生成的离子称为二价离子，这种电离称为二次电离，依此类推。普通焊接电弧中当焊接电流较小时只存在一次电离，而在大电流和压缩焊接电弧中，电弧温度达到几万度时可以出现二次或三次电离，即使这种情况下，一次电离仍居主要地位，所以一般书籍中只列出各种气体一次电离的电离电压。自由状态气体原子的一次电离电压在3.9V(Cs)到24.5V(He)之间，二次电离电压在十几伏到几百伏之间。一次电离电压低的粒子，二次电离电压不一定还低，这由粒子的原子结构决定。电弧气氛中可能遇到的气体粒子的电离电压见表2-1。\n\
+      - [constraint_000015] 电压: $7.9\\mathrm{V}$\n  来源 Unit: unit_000206\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\"\
+      : \"unit_000206\", \"end_unit_id\": \"unit_000262\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_000206;\
+      \ type=passage; page=20]\n  当电弧空间同时存在几种电离电压不同的气体时，在外加能量的作用下，电离电压较低的气体粒子先被电离，如果这种低电离电压气体供应充分，则电弧空间的带电粒子将主要依靠这种气体的电离过程来提供，所需要的外加能量也主要由这种气体的电离电压所决定。由表2-1可知，Fe的电离电压为\
+      \ $7.9\\mathrm{V}$ ，比 $\\mathrm{CO}_{2}$ 或Ar的电离电压（13.7V；15.7V）低很多，因此在钢材的气体保护焊时，如果焊接电流较大，电弧空间将充满铁的蒸气，电弧空间的带电粒子将主要由铁蒸气的电离过程提供，电弧气氛的电离电压将由铁蒸气的电离电压来决定。在这种情况下为提供电弧导电所需要的带电粒子，要求的外加能量级可以较低。\n\
+      - [constraint_000024] explicit_condition: 光量子能超过气体粒子的电离能\n  来源 Unit: unit_000229\n  作用域: {\"scope_type\": \"unit_range\"\
+      , \"start_unit_id\": \"unit_000229\", \"end_unit_id\": \"unit_000245\", \"target_unit_ids\": [], \"candidate_ranges\"\
+      : []}\n  [unit_000229; type=passage; page=22]\n  以光量子形式传递给气体粒子的能量可以全部转换为粒子的内能。当光量子能超过气体粒子的电离能时，其余部分将转换为电离生成的电子的能量，即\n\
+      \n核心正文:\n[unit_000233; type=passage; page=22]\n电弧本身可以发出多种频率的光辐射，因此电弧本身就具有向气体粒子提供辐射能量的条件，中性粒子接受弧光辐射能可以产生激励与电离，制造带电粒子，维持电弧的导电。但是在一般焊接电弧中，与碰撞传递相比通过光辐射传递形式制造带电粒子则是次要的（见附录B）。\n\
+      \n支撑内容:\n[unit_000193; type=title; page=18]\n2.1.2 带电粒子的产生和消失"
+  output: '规则组1
+
+    C: 焊接电弧|一般焊接电弧
+
+    R: 电弧|发出多种频率光辐射 —[提供]→ 气体粒子辐射能量|增加
+
+    R: 中性粒子|接受弧光辐射能 —[产生]→ 中性粒子状态|激励
+
+    R: 中性粒子|接受弧光辐射能 —[产生]→ 中性粒子状态|电离
+
+    R: 中性粒子|电离 —[产生]→ 带电粒子|增加
+
+    R: 带电粒子|增加 —[维持]→ 电弧导电|持续
+
+    R: 光辐射传递|制造带电粒子的重要性 —[低于]→ 碰撞传递|制造带电粒子的重要性'
+- id: context_000208
+  route: text+image
+  difficulty_tags:
+  - 液柱短路
+  - 电磁收缩链
+  - 图片核对
+  construction_rationale: 较小熔滴与熔池液面短路是液柱形成及后续过程的共同场景，较大电流则直接触发电磁收缩，放在R输入而非C。按液柱收缩、电流通道变窄、中心压力增大、形成轴向压力梯度、液体流动和促进过渡逐级抽取；图3-12只核对受力方向。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000208.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000208
+    prompt_id: rule_generator_routed__text__image
+    prompt_version: base@6+text@2+image@4
+  input:
+    text: "上下文包编号: context_000208\n\n标题路径:\n第3章 熔滴过渡与焊缝成形 > 3.2 熔滴过渡 > 3.2.2 熔滴上的作用力\n\n包条件（已由上游确定作用域）:\n- [constraint_000240]\
+      \ explicit_condition: 焊接\n  来源 Unit: unit_001140\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_001140\"\
+      , \"end_unit_id\": \"unit_001179\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_001140; type=passage;\
+      \ page=101]\n  表面张力系数通常受熔滴温度的影响较小，所以在焊接条件下可以认为表面张力系数为常数。\n- [constraint_000242] 焊接电流: 焊接电流较小\n  来源 Unit: unit_001153\n\
+      \  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_001153\", \"end_unit_id\": \"unit_001185\", \"target_unit_ids\"\
+      : [], \"candidate_ranges\": []}\n  [unit_001153; type=passage; page=102]\n  $\\rho / \\sigma$ 越大时，则熔滴越细小。显然在焊接电流较小时进行立焊和仰焊的情况下，重力将阻碍熔滴过渡。\n\
+      \n核心正文:\n[unit_001162; type=passage; page=102]\n电磁力对熔滴过渡也有阻碍力和促进力之分。电磁力直接帮助熔滴脱落的例子如图3-12所示。与水滴的情况类似，较小的熔滴与液面短路的场合，容易形成稳定于焊丝端部与熔池液面间的液柱，并保持短路形态而不破断。然而，当这个液柱中流过较大的电流时，受到电磁收缩力的作用，液柱将会收缩，电流通道变窄，收缩区中心的压力进一步增大，从而产生轴向上的压力梯度。驱使液体从颈缩部位向膨胀部位流动，即促进熔滴向熔池过渡（见图3-12a）。\n\
+      \n支撑内容:\n[unit_001131; type=title; page=101]\n3.2.2 熔滴上的作用力\n\n资源文字化:\n[unit_001169; type=figure; page=103]\n题注: c)\
+      \  图3-12 作用在液柱或熔滴上的电磁收缩力\n原始文字:\nc)  图3-12 作用在液柱或熔滴上的电磁收缩力\n资源标题: 图3-12 作用在液柱或熔滴上的电磁收缩力\n资源描述: 图中展示了一个垂直放置的圆柱形液柱，其下端连接着一个球形的熔滴。液柱和熔滴内部画有多条垂直的虚线。在球形熔滴的底部，有两个水平指向中心的箭头，表示收缩力。从熔滴底部向下延伸出几条虚线，指向下方的水平地面（用斜线表示）。"
+    images:
+    - unit_id: unit_001169
+      type: figure
+      page: 103
+      caption: c)  图3-12 作用在液柱或熔滴上的电磁收缩力
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/770191c8be1b5e63994ee9e9081b94394550093abfdc6ec332c137fe8e1f2d37.jpg
+  output: '规则组1
+
+    C: 熔滴尺寸|较小 + 熔滴与熔池液面|短路
+
+    R: 熔滴与熔池液面|短路 —[形成]→ 焊丝端部与熔池间液柱|稳定
+
+    R: 液柱电流|较大 —[产生]→ 电磁收缩力|作用
+
+    R: 电磁收缩力|作用 —[使]→ 液柱|收缩
+
+    R: 液柱|收缩 —[使]→ 电流通道|变窄
+
+    R: 电流通道|变窄 —[使]→ 收缩区中心压力|增大
+
+    R: 收缩区中心压力|增大 —[形成]→ 轴向压力梯度|存在
+
+    R: 轴向压力梯度|存在 —[驱使]→ 液体流动方向|由颈缩部位流向膨胀部位
+
+    R: 液体|由颈缩部位流向膨胀部位 —[促进]→ 熔滴向熔池过渡|发生'
+- id: context_000214
+  route: text
+  difficulty_tags:
+  - 阈值
+  - 压缩机理
+  - 截断句
+  construction_rationale: 熔化极气体保护焊是共同场景。纯CO2只是“CO2体积分数达到30%以上”的极端示例，不另造一条重复充分条件。闭合证据支持CO2比例达到阈值后压缩作用使电弧集中，再使斑点电流密度增大；末尾“从而产生”缺少结果，必须停止抽取。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000214.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000214
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: "上下文包编号: context_000214\n\n标题路径:\n第3章 熔滴过渡与焊缝成形 > 3.2 熔滴过渡 > 3.2.3 熔化极气体保护焊的主要熔滴过渡形式\n\n包条件（已由上游确定作用域）:\n- [constraint_000251]\
+      \ explicit_condition: 目视观察\n  来源 Unit: unit_001190\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_001190\"\
+      , \"end_unit_id\": \"unit_001212\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_001190; type=passage;\
+      \ page=104]\n  熔滴过渡形式，两者之间有着密切的对应关系，如图3-15所示。通常透过电焊玻璃在目视观察时，可以根据电弧形态判断熔滴过渡形式。如大滴过渡为束状电弧；射滴过渡为钟罩状电弧；射流过渡为锥状电弧。\n\n核心正文:\n\
+      [unit_001199; type=passage; page=105]\n如果保护气体中 $\\mathrm{CO}_{2}$ 气的体积分数增加至 $30\\%$ 以上，甚至达到纯 $\\mathrm{CO}_{2}$ 保护时，由于\
+      \ $\\mathrm{CO}_{2}$ 气体的压缩作用，使得电弧集中，斑点处的电流密度较大，从而产生\n\n支撑内容:\n[unit_001186; type=title; page=104]\n3.2.3 熔化极气体保护焊的主要熔滴过渡形式"
+  output: '规则组1
+
+    C: 焊接方法|熔化极气体保护焊
+
+    R: 保护气体中CO2体积分数|30%以上直至纯CO2 —[增强]→ CO2气体压缩作用|增强
+
+    R: CO2气体压缩作用|增强 —[使]→ 电弧|集中
+
+    R: 电弧|集中 —[使]→ 斑点处电流密度|较大'
+- id: context_000404
+  route: text
+  difficulty_tags:
+  - 同属性比较
+  - 材料厚度约束
+  - 裸事实改写
+  - 截断句
+  construction_rationale: 熔深比较只在焊接参数和设备相同时成立，比较两端均保留焊法与熔深属性。板厚12mm以下不锈钢是无需坡口、一次完成和单面焊双面成形的共同适用范围，三项均改写成完整关系。末尾活性剂分解作用被截断，不从常识补充机理。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000404.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000404
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: "上下文包编号: context_000404\n\n标题路径:\n第4章 钨极惰性气体保护焊 > 4.6 特种TIG焊方法 > 4.6.1 A-TIG焊技术\n\n包条件（已由上游确定作用域）:\n- [constraint_000463]\
+      \ 厚度: $6\\mathrm{mm}$ 以上的材料时\n  来源 Unit: unit_002263\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"\
+      unit_002263\", \"end_unit_id\": \"unit_002310\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_002263;\
+      \ type=passage; page=205]\n  由于TIG焊焊接过程稳定，保护效果好和焊接质量优异，所以该法应用十分广泛。但是由于钨极的载流能力有限，焊接熔深浅，在不开坡口平板对接焊时只能焊接 $3\\mathrm{mm}$\
+      \ 以下的板，从而使应用受到限制。在焊接厚度为 $6\\mathrm{mm}$ 以上的材料时，一般都采用多道焊。为此，乌克兰巴顿焊接研究所于20世纪60年代发明了活性焊剂TIG焊（Activate flux TIG焊，简称A-TIG焊）。发明了活性剂，用以焊接不锈钢和钛合金，取得了较大的熔深和良好的效益。\n\
+      \n核心正文:\n[unit_002265; type=passage; page=205]\n在相同焊接参数、相同设备的条件下，活性焊剂TIG焊的熔深比常规的TIG焊增加 $1\\sim 3$ 倍，在焊接板厚 $12\\mathrm{mm}$\
+      \ 以下的不锈钢材料时，无需开坡口，可一次焊接完成，并实现单面焊双面成形。同时由于活性剂在电弧高温下分解的作用，\n\n支撑内容:\n[unit_002261; type=title; page=205]\n4.6.1 A-TIG焊技术"
+  output: '规则组1
+
+    C: 焊接参数|相同 + 焊接设备|相同
+
+    R: 活性焊剂TIG焊|熔深 —[比常规TIG焊增加1~3倍]→ 常规TIG焊|熔深
+
+    规则组2
+
+    C: 焊接方法|活性焊剂TIG焊 + 母材材质|不锈钢 + 板厚|12mm以下
+
+    R: 焊接工艺|实施 —[允许]→ 坡口|无需开设
+
+    R: 焊接工艺|实施 —[允许]→ 焊接道次|一次完成
+
+    R: 焊接工艺|实施 —[实现]→ 焊缝成形|单面焊双面成形'
+- id: context_000600
+  route: text
+  difficulty_tags:
+  - 禁止操作
+  - 多后果拆分
+  - 推荐起弧步骤
+  construction_rationale: CO2焊起弧是共同场景。焊丝接触母材与按下按钮由原文“在这种情况下”证明需共同成立，使用加号并分别连接飞溅、堵塞、反烧和烧毁；堵塞到端头粘连保留相邻链。正确操作拆成先保持距离、再允许按下开关，避免把“要求”箭头方向写反。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000600.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000600
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_000600
+
+
+      标题路径:
+
+      第5章 $\mathrm{CO}_{2}$ 气体保护焊 > 5.4 $\mathrm{CO}_{2}$ 焊的焊接工艺 > 5.4.3 $\mathrm{CO}_{2}$ 焊的焊接操作
+
+
+      核心正文:
+
+      [unit_003140; type=passage; page=297]
+
+      起弧时切忌在焊丝与母材接触时按焊枪按钮，在这种情况下起弧，往往会造成很大飞溅，并可使导电嘴堵塞，结果使焊丝与导电嘴端头粘在一起，还可能出现反烧，甚至烧毁导电嘴。所以，起弧之前应该在焊丝端头与母材表面之间保持一定距离的情况下按焊枪开关。
+
+
+      支撑内容:
+
+      [unit_003135; type=title; page=297]
+
+      5.4.3 $\mathrm{CO}_{2}$ 焊的焊接操作'
+  output: '规则组1
+
+    C: 焊接方法|CO2焊 + 操作阶段|起弧
+
+    R: 焊丝与母材|接触 + 焊枪按钮|按下 —[造成]→ 飞溅|很大
+
+    R: 焊丝与母材|接触 + 焊枪按钮|按下 —[造成]→ 导电嘴|堵塞
+
+    R: 导电嘴|堵塞 —[使]→ 焊丝与导电嘴端头|粘连
+
+    R: 焊丝与母材|接触 + 焊枪按钮|按下 —[可能造成]→ 导电嘴|反烧
+
+    R: 焊丝与母材|接触 + 焊枪按钮|按下 —[可能造成]→ 导电嘴|烧毁
+
+    R: 起弧准备|进行 —[要求]→ 焊丝端头与母材表面距离|保持一定距离
+
+    R: 焊丝端头与母材表面距离|保持一定距离 —[允许]→ 焊枪开关|按下'
+- id: context_000612
+  route: text+image
+  difficulty_tags:
+  - 位置约束
+  - 缺陷原因
+  - 操作参数
+  - 图片核对
+  construction_rationale: 药芯焊丝CO2立向下角焊限定全部规则。熔敷金属下淌分别导致熔合不良和夹渣；焊枪倾角绑定5°~15°，不能输出裸角度。直线运条是防止夹渣的明确措施；原文“不应横向摆动”作为同一措施的限制说明，不再制造对象含糊的禁止规则。图片仅核对层道和参数范围。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000612.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000612
+    prompt_id: rule_generator_routed__text__image
+    prompt_version: base@6+text@2+image@4
+  input:
+    text: "上下文包编号: context_000612\n\n标题路径:\n第5章 $\\mathrm{CO}_{2}$ 气体保护焊 > 5.4 $\\mathrm{CO}_{2}$ 焊的焊接工艺 > 5.4.4 药芯焊丝 $\\\
+      mathrm{CO}_{2}$ 焊工艺\n\n包条件（已由上游确定作用域）:\n- [constraint_000704] parameter: 250A以上\n  来源 Unit: unit_003173\n  作用域: {\"\
+      scope_type\": \"unit_range\", \"start_unit_id\": \"unit_003173\", \"end_unit_id\": \"unit_003206\", \"target_unit_ids\"\
+      : [], \"candidate_ranges\": []}\n  [unit_003173; type=passage; page=300]\n  （1）药芯焊丝 $\\mathrm{CO}_{2}$ 焊的优点 药芯焊丝 $\\\
+      mathrm{CO}_{2}$ 焊与实心焊丝 $\\mathrm{CO}_{2}$ 焊相比，尽管表面上看有许多类似之处，但是药芯焊丝 $\\mathrm{CO}_{2}$ 焊仍有许多优势。1）由于药芯焊丝中加入了稳弧剂，所以焊接电弧稳定，电弧柔和，飞溅很少，焊缝外观成形良好。2）由于\
+      \ $\\mathrm{CO}_{2}$ 气体与药芯中焊剂的联合保护作用，不仅屏蔽了空气，而且还能进行脱氧反应，从而提高了焊缝金属的抗气孔能力。3）药芯焊丝比实心焊丝具有更高的熔敷速度。这是因为相同直径的焊丝，药芯焊丝仅仅是外部的薄钢皮导电，实际导电截面积小，则电流密度大。另外药芯焊丝的焊丝伸出长度较大，通常焊接电流在250A以下时为\
+      \ $15\\mathrm{mm}$ ，而在250A以上时为 $20\\sim 25\\mathrm{mm}$ ，因此焊丝的熔化效率更高。4）药芯焊丝对弧焊电源的适应性强，不仅可以选择直流电源，而且还可以选择交流电源；另外不仅可以选用平特性电源，而且还可以选择陡降特性电源。所以一般用于实心焊丝的\
+      \ $\\mathrm{CO}_{2}$ 焊机均可用于药芯焊丝，勿需再开发新的焊机。5）焊接各种钢材的适应性强。尤其是焊接高强度钢，难以提供相应的实心焊丝，而对于药芯焊丝，通过调整药芯的成分和比例，就能满足需要。\n- [constraint_000707]\
+      \ 送丝速度: 改变相同的送丝速度\n  来源 Unit: unit_003189\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_003189\"\
+      , \"end_unit_id\": \"unit_003206\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_003189; type=passage;\
+      \ page=301]\n  （2）焊接电流与电弧电压 与实心焊丝 $\\mathrm{CO}_{2}$ 焊相比，药芯焊丝 $\\mathrm{CO}_{2}$ 焊可以采用较大的焊接电流。尤其是在空间位置焊接时，由于熔渣的作用允许焊接电流更大些。图5-86所示为碳钢药芯焊丝\
+      \ $\\mathrm{CO}_{2}$ 焊的送丝速度与焊接电流的关系。细丝在改变相同的送丝速度时，焊接电流在低电流范围内改\n- [constraint_000709] 焊丝: 例\n  来源 Unit: unit_003194\n\
+      \  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_003194\", \"end_unit_id\": \"unit_003206\", \"target_unit_ids\"\
+      : [], \"candidate_ranges\": []}\n  [unit_003194; type=passage; page=302]\n  药芯焊丝 $\\mathrm{CO}_{2}$ 焊的焊接电流与电弧电压的关系和实心焊丝一样，两者之间应当适当匹配。如图5-87所示，随着焊接电流的增加，电弧电压应成比例的提高，而在某一焊接电流时，电弧电压可以在\
+      \ $5\\sim 6\\mathrm{V}$ 范围内调整。以 $\\phi 1.2\\mathrm{mm}$ 焊丝为例，焊接电流的调节范围为 $130\\sim 320\\mathrm{A}$ ，要求电弧电压为 $20\\sim\
+      \ 33\\mathrm{V}$ 。\n- [constraint_000710] 电弧电压: $20\\sim 33\\mathrm{V}$\n  来源 Unit: unit_003194\n  作用域: {\"scope_type\"\
+      : \"unit_range\", \"start_unit_id\": \"unit_003194\", \"end_unit_id\": \"unit_003206\", \"target_unit_ids\": [], \"\
+      candidate_ranges\": []}\n  [unit_003194; type=passage; page=302]\n  药芯焊丝 $\\mathrm{CO}_{2}$ 焊的焊接电流与电弧电压的关系和实心焊丝一样，两者之间应当适当匹配。如图5-87所示，随着焊接电流的增加，电弧电压应成比例的提高，而在某一焊接电流时，电弧电压可以在\
+      \ $5\\sim 6\\mathrm{V}$ 范围内调整。以 $\\phi 1.2\\mathrm{mm}$ 焊丝为例，焊接电流的调节范围为 $130\\sim 320\\mathrm{A}$ ，要求电弧电压为 $20\\sim\
+      \ 33\\mathrm{V}$ 。\n- [constraint_000712] explicit_condition: 半自动焊\n  来源 Unit: unit_003198\n  作用域: {\"scope_type\":\
+      \ \"unit_range\", \"start_unit_id\": \"unit_003198\", \"end_unit_id\": \"unit_003206\", \"target_unit_ids\": [], \"\
+      candidate_ranges\": []}\n  [unit_003198; type=passage; page=302]\n  （3）焊接速度 焊接电流和电弧电压确定后应选择合理的焊接速度，在半自动焊时，根据人体功能决定，焊接速度只能在\
+      \ $30\\sim 50\\mathrm{cm / min}$ 范围内。焊接速度过低引起焊缝成形不良，而焊接速度过高时焊工难以控制。而药芯焊丝自动焊时，焊接速度可以进一步提高，达到 $1\\mathrm{m / min}$ 。当焊接速度过快时，可能引起气孔和咬边等。（4）焊丝伸出长度\
+      \ 焊丝伸出长度应根据焊接电流的大小来选择，在焊接电流为250A以下时，其长度为 $15\\mathrm{mm}$ 左右；焊接电流大于250A时，其长度为\n- [constraint_000714] 焊接速度: 焊接速度过快\n\
+      \  来源 Unit: unit_003198\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_003198\", \"end_unit_id\"\
+      : \"unit_003206\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_003198; type=passage; page=302]\n  （3）焊接速度\
+      \ 焊接电流和电弧电压确定后应选择合理的焊接速度，在半自动焊时，根据人体功能决定，焊接速度只能在 $30\\sim 50\\mathrm{cm / min}$ 范围内。焊接速度过低引起焊缝成形不良，而焊接速度过高时焊工难以控制。而药芯焊丝自动焊时，焊接速度可以进一步提高，达到\
+      \ $1\\mathrm{m / min}$ 。当焊接速度过快时，可能引起气孔和咬边等。（4）焊丝伸出长度 焊丝伸出长度应根据焊接电流的大小来选择，在焊接电流为250A以下时，其长度为 $15\\mathrm{mm}$ 左右；焊接电流大于250A时，其长度为\n\
+      - [constraint_000716] 焊接电流: 250A时\n  来源 Unit: unit_003198\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\"\
+      : \"unit_003198\", \"end_unit_id\": \"unit_003206\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_003198;\
+      \ type=passage; page=302]\n  （3）焊接速度 焊接电流和电弧电压确定后应选择合理的焊接速度，在半自动焊时，根据人体功能决定，焊接速度只能在 $30\\sim 50\\mathrm{cm / min}$ 范围内。焊接速度过低引起焊缝成形不良，而焊接速度过高时焊工难以控制。而药芯焊丝自动焊时，焊接速度可以进一步提高，达到\
+      \ $1\\mathrm{m / min}$ 。当焊接速度过快时，可能引起气孔和咬边等。（4）焊丝伸出长度 焊丝伸出长度应根据焊接电流的大小来选择，在焊接电流为250A以下时，其长度为 $15\\mathrm{mm}$ 左右；焊接电流大于250A时，其长度为\n\
+      \n核心正文:\n[unit_003204; type=passage; page=303]\n下面仅以立向下角焊为例说明药芯焊丝的焊接操作要领及焊接参数，如图5-88、图5-89所示。立向下角焊时，熔敷金属易向下淌，容易产生熔合不良、夹渣等缺陷。焊接时焊枪向下的倾角为\
+      \ $5^{\\circ} \\sim 15^{\\circ}$ 。为防止夹渣一般都采用直线运条而不应做横向摆动运条。\n\n支撑内容:\n[unit_003170; type=title; page=300]\n5.4.4 药芯焊丝\
+      \ $\\mathrm{CO}_{2}$ 焊工艺\n\n资源文字化:\n[unit_003206; type=figure; page=303]\n题注: 图5-88 立向下角焊的操作要领\n原始文字:\n图5-88 立向下角焊的操作要领\n\
+      资源标题: 图5-88 立向下角焊的操作要领\n资源描述: 该图展示了两种立向下角焊的焊接层道示意图。左侧图示为“2层2道焊接”，显示两块金属板呈倒V形（∧）连接，焊缝区域标注了数字1和2，表示焊接顺序或层道。右侧图示为“2层3道焊接(多层焊时直线运条)”，同样显示倒V形连接，焊缝区域标注了数字1、2和3，表示焊接顺序或层道。\n\
+      \n[unit_003207; type=figure; page=303]\n题注: 图5-89 立向下角焊的焊接参数（熔渣型药芯焊丝）\n原始文字:\n图5-89 立向下角焊的焊接参数（熔渣型药芯焊丝）\n资源标题: 立向下角焊的焊接参数（熔渣型药芯焊丝）\n\
+      资源描述: 该图展示了立向下角焊的焊接参数范围，分为上下两部分。上半部分纵轴为焊接速度（cm/min），范围30-120，横轴未标注但对应下方电流范围。图中包含两条斜向矩形带，分别对应φ1.2mm和φ1.4mm焊丝。φ1.2mm焊丝的速度范围约为75-105\
+      \ cm/min，φ1.4mm焊丝约为50-85 cm/min。速度过高（上方）导致“烧穿”，过低（下方）导致“熔合不良”或“先焊熔敷金属”。下半部分纵轴为电弧电压（V），范围20-35，横轴为焊接电流（A），范围200-300。图中展示了φ1.2mm和φ1.4mm焊丝的“使用范围”（斜向矩形带）。φ1.2mm焊丝电流范围约210-310A，电压约26-33V；φ1.4mm焊丝电流范围约220-300A，电压约23-30V。电压过低（左下）导致“熔合不良”，电压过高（右上）导致“烧穿”。中间区域标注了“凹形焊道”和“焊瘤”的示意图。"
+    images:
+    - unit_id: unit_003206
+      type: figure
+      page: 303
+      caption: 图5-88 立向下角焊的操作要领
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/64354caf3aebd1009144b2f49b086226536d9dbd438e619db22cd216b874300b.jpg
+    - unit_id: unit_003207
+      type: figure
+      page: 303
+      caption: 图5-89 立向下角焊的焊接参数（熔渣型药芯焊丝）
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/12ccf356cf16b30138002fab888d93ee1e9e4de8afde49f1120b41363498dfa3.jpg
+  output: '规则组1
+
+    C: 焊接方法|药芯焊丝CO2焊 + 焊接位置|立向下角焊
+
+    R: 熔敷金属|易向下淌 —[容易产生]→ 熔合不良|发生
+
+    R: 熔敷金属|易向下淌 —[容易产生]→ 夹渣|发生
+
+    R: 焊枪|向下倾斜 —[对应]→ 焊枪倾角|5°~15°
+
+    R: 运条方式|直线运条且不横向摆动 —[防止]→ 夹渣|发生'
+- id: context_000813
+  route: text
+  difficulty_tags:
+  - 同向电流
+  - 电弧吸引链
+  - 共同措施
+  - 气体替代
+  construction_rationale: 双丝高效MAG焊是共同场景。同向电流先导致两电弧相互吸引，再分别造成电弧不稳和飞溅，保持因果链。选脉冲电流与优化波形由“同时”证明为共同措施，可放在同一R输入；三元气体整体作为一个保护气体成分状态替代二元气体，内部加号不拆实体。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000813.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000813
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_000813
+
+
+      标题路径:
+
+      第6章 熔化极氩弧焊 > 6.6 先进的MIG焊方法 > 6.6.2 双丝高效MAG焊
+
+
+      核心正文:
+
+      [unit_004127; type=passage; page=414]
+
+      两根焊丝的电流方向是相同的。这就决定了两个电弧必然互相吸引，而导致电弧不稳和产生飞溅。可以采用如下措施，一是选用脉冲电流，同时应优化脉冲电流波形。二是选择 $\mathrm{Ar} + \mathrm{CO}_2 + \mathrm{O}_2$
+      三元气体代替二元气体。
+
+
+      支撑内容:
+
+      [unit_004116; type=title; page=413]
+
+      6.6.2 双丝高效MAG焊'
+  output: '规则组1
+
+    C: 焊接方法|双丝高效MAG焊
+
+    R: 两根焊丝电流方向|相同 —[使]→ 两个电弧|相互吸引
+
+    R: 两个电弧|相互吸引 —[使]→ 电弧稳定性|降低
+
+    R: 两个电弧|相互吸引 —[产生]→ 飞溅|发生
+
+    R: 脉冲电流|选用 + 脉冲电流波形|优化 —[用于提高]→ 电弧稳定性|提高
+
+    R: 保护气体|Ar + CO2 + O2三元气体 —[替代]→ 保护气体|二元气体'
+- id: context_000825
+  route: text
+  difficulty_tags:
+  - 尺寸要求链
+  - 工艺不足
+  - 段落边界
+  construction_rationale: 本段先描述单独激光焊的限制，再说明激光—MIG复合焊能够弥补。聚焦光斑不大于0.6mm分别提高坡口间隙和跟踪精度要求；尚未形成熔池限定激光热效率低。末句只概括复合焊能弥补这些不足，具体原因在后文，当前包不提前补造。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_000825.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_000825
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: "上下文包编号: context_000825\n\n标题路径:\n第6章 熔化极氩弧焊 > 6.6 先进的MIG焊方法 > 6.6.3 激光—MIG复合焊\n\n包条件（已由上游确定作用域）:\n- [constraint_000931]\
+      \ 材料: 激光束撞击到材料表面上\n  来源 Unit: unit_004209\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_004209\"\
+      , \"end_unit_id\": \"unit_004246\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_004209; type=passage;\
+      \ page=423]\n  焊接金属工件时，YAG激光器输出的激光束能量密度为 $10^{6}\\mathrm{W / cm}^{2}$ 。当激光束撞击到材料表面上时，受热表面立即达到蒸发温度并且因为流动的金属蒸气的作用，在被焊金属中产生凹坑。在此处能得到较大深宽比的焊缝。而GMAW电弧的能量密度略大于\
+      \ $10^{4}\\mathrm{W / cm}^{2}$ ，它仅能得到较宽的焊缝，其深宽比小。从复合焊原理图（见图6-85）上可看到激光束与电弧在待焊处的同一区域合成。激光束与电弧相\n\n核心正文:\n[unit_004217;\
+      \ type=passage; page=424]\n激光束直径很细，聚焦后的光斑直径为 $0.6\\mathrm{mm}$ 以下，要求坡口装配间隙小，对焊缝跟踪精度要求高。同时尚未形成熔池时激光的热效率很低，而激光—MIG复合焊恰好弥补了这些不足，主要原因有以下几点。\n\
+      \n支撑内容:\n[unit_004205; type=title; page=423]\n6.6.3 激光—MIG复合焊"
+  output: '规则组1
+
+    C: 无
+
+    R: 激光束|聚焦 —[形成]→ 光斑直径|0.6mm以下
+
+    R: 聚焦光斑直径|0.6mm以下 —[要求]→ 坡口装配间隙|小
+
+    R: 聚焦光斑直径|0.6mm以下 —[要求]→ 焊缝跟踪精度|高
+
+    R: 激光焊接状态|尚未形成熔池 —[对应]→ 激光热效率|很低
+
+    R: 焊接方法|激光—MIG复合焊 —[弥补]→ 单独激光焊上述不足|得到弥补'
+- id: context_001010
+  route: text+formula
+  difficulty_tags:
+  - 碰撞类型
+  - 动量守恒
+  - 公式等价
+  construction_rationale: 非弹性碰撞的一般结论是总动量守恒；完全非弹性碰撞还增加碰后不分离和共同速度条件。动量守恒式以碰前总动量和碰后总动量作为等式两端，完整公式放入箭头；共同速度计算式另以初始质量与速度为输入，避免式号、自环或裸公式结果。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001010.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001010
+    prompt_id: rule_generator_routed__text__formula
+    prompt_version: base@6+text@2+formula@3
+  input:
+    text: "上下文包编号: context_001010\n\n标题路径:\n附录A 碰撞中的能量交换\n\n包条件（已由上游确定作用域）:\n- [constraint_001026] explicit_condition: 两个粒子发生弹性碰撞\n\
+      \  来源 Unit: unit_004553\n  作用域: {\"scope_type\": \"unit_range\", \"start_unit_id\": \"unit_004553\", \"end_unit_id\"\
+      : \"unit_004570\", \"target_unit_ids\": [], \"candidate_ranges\": []}\n  [unit_004553; type=passage; page=458]\n  当两个粒子发生弹性碰撞时，碰撞前的总动量为\n\
+      \n核心正文:\n[unit_004561; type=passage; page=458]\n如果发生非弹性碰撞时，碰撞前后总动量仍守恒；若是完全非弹性碰撞时，两粒子碰撞后不再分离，以同一速度 $v_{x}$ 运动，得到\n\n\
+      [unit_004563; type=passage; page=458]\n则 $v_{\\mathrm{x}} = \\frac{m_1u_{1\\mathrm{x}} + m_2u_{2\\mathrm{x}}}{m_1 +\
+      \ m_2}$ (1)\n\n资源文字化:\n[unit_004562; type=formula; page=458]\n题注: \n原始文字:\n$$\\left(m _ {1} + m _ {2}\\right) v _ {\\\
+      mathrm {x}} = m _ {1} u _ {1 \\mathrm {x}} + m _ {2} u _ {2 \\mathrm {x}}$$\n公式摘要: 完全非弹性碰撞时，两粒子碰撞后以同一速度运动，碰撞前后总动量守恒\n\
+      符号释义: [{\"symbol\": \"m_1\", \"meaning\": \"粒子1的质量\", \"unit\": null, \"evidence_unit_ids\": []}, {\"symbol\": \"m_2\"\
+      , \"meaning\": \"粒子2的质量\", \"unit\": null, \"evidence_unit_ids\": []}, {\"symbol\": \"v_x\", \"meaning\": \"两粒子碰撞后不再分离，以同一速度运动的速度\"\
+      , \"unit\": null, \"evidence_unit_ids\": [\"unit_004561\"]}, {\"symbol\": \"u_{1x}\", \"meaning\": \"粒子1碰撞前的x方向速度\"\
+      , \"unit\": null, \"evidence_unit_ids\": []}, {\"symbol\": \"u_{2x}\", \"meaning\": \"粒子2碰撞前的x方向速度\", \"unit\": null,\
+      \ \"evidence_unit_ids\": []}]"
+  output: '规则组1
+
+    C: 碰撞类型|非弹性碰撞
+
+    R: 碰撞过程|发生 —[保持]→ 碰撞前后总动量|守恒
+
+    规则组2
+
+    C: 碰撞类型|完全非弹性碰撞
+
+    R: 两粒子|碰撞 —[形成]→ 碰后分离状态|不再分离
+
+    R: 碰前总动量|m₁u₁x+m₂u₂x —[$(m_1+m_2)v_x=m_1u_{1x}+m_2u_{2x}$]→ 碰后总动量|(m₁+m₂)vₓ
+
+    R: 粒子质量与初速度|m₁、m₂、u₁x、u₂x —[$v_x=\frac{m_1u_{1x}+m_2u_{2x}}{m_1+m_2}$]→ 碰后共同速度|vₓ'
+- id: context_001042
+  route: text+image
+  difficulty_tags:
+  - 图片趋势
+  - 角度最值
+  - 参数作用
+  construction_rationale: TIG焊是共同场景。正文明确钨极端部几何形状影响熔池电弧力，并指出45°时压力最大。图2-38进一步明确在图示试验范围内电流增大使压力增大、相同电流下端部角度越小压力越大；这些是图中稳定可辨的趋势，不抄录散点近似数值。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001042.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001042
+    prompt_id: rule_generator_routed__text__image
+    prompt_version: base@6+text@2+image@4
+  input:
+    text: "上下文包编号: context_001042\n\n标题路径:\n第2章 焊接电弧 > 2.2 电弧的能量转换 > 2.2.2 电弧压力及其影响因素\n\n核心正文:\n[unit_000661; type=passage;\
+      \ page=55]\n（5）钨极端部几何形状 钨极端部的几何形状与电弧作用在熔池上的力有着密切的关系。通常钨极端部角度为 $45^{\\circ}$ 时，具有最大的电弧压力，如图2-38所示。\n\n支撑内容:\n[unit_000665;\
+      \ type=passage; page=55]\n45\n\n[unit_000673; type=passage; page=56]\n气体保护焊工艺基础及应用\n\n资源文字化:\n[unit_000663; type=figure;\
+      \ page=55]\n题注: b)  图2-38 电弧力与电极端部角度的关系\n原始文字:\nb)  图2-38 电弧力与电极端部角度的关系\n资源标题: 电弧力与电极端部角度的关系\n资源描述: 该图为散点折线图，展示了TIG电弧条件下电弧压力与电流的关系。纵轴为电弧压力\
+      \ $p_{max}$，单位kPa，刻度从0到3.2；横轴为电流，单位A，刻度从200到400。图例显示实验参数：TIG电弧，钨极直径 $\text{φ}8\text{mm}$，氩气流量 $25\text{L/min}$。图中包含四条曲线，分别对应不同的电极角度：$45^{\t\
+      ext{o}}$、$60^{\text{o}}$、$90^{\text{o}}$ 和 $120^{\text{o}}$。每条曲线上有三个数据点，分别用实心圆点（弧长6mm）、空心圆点（弧长4mm）和实心三角形（弧长2mm）标记。总体趋势显示，随着电流增加，电弧压力增大；在相同电流下，电极角度越小（如$45^{\t\
+      ext{o}}$），电弧压力越大。"
+    images:
+    - unit_id: unit_000663
+      type: figure
+      page: 55
+      caption: b)  图2-38 电弧力与电极端部角度的关系
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/8b2992a9b279ed69833f3fe5f74b42a07b51edcc6e1074d2133e43a5be06be22.jpg
+  output: '规则组1
+
+    C: 焊接方法|TIG焊
+
+    R: 钨极端部几何形状|变化 —[影响]→ 电弧作用于熔池的力|变化
+
+    R: 钨极端部角度|45° —[对应]→ 电弧压力|最大
+
+    R: 焊接电流|增大 —[使]→ 电弧压力|增大
+
+    R: 钨极端部角度|减小 —[使]→ 相同电流下电弧压力|增大'
+- id: context_001337
+  route: text+image
+  difficulty_tags:
+  - 位置比较
+  - 间隙趋势
+  - 层数比较
+  - 图片核对
+  construction_rationale: MIG焊是共同场景。横焊、仰焊与平焊的气孔倾向应写为同属性比较，不能仅说“产生气孔”而丢失基准；根部间隙增大对应气孔减少；多层焊与单道焊也保持同属性比较。图片核对间隙总体趋势，但局部末端回升未获正文确认，不额外抽取。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001337.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001337
+    prompt_id: rule_generator_routed__text__image
+    prompt_version: base@6+text@2+image@4
+  input:
+    text: '上下文包编号: context_001337
+
+
+      标题路径:
+
+      第6章 熔化极氩弧焊 > 6.2 MIG焊冶金特点
+
+
+      核心正文:
+
+      [unit_003441; type=passage; page=325]
+
+      焊接位置、坡口形式和根部间隙等的影响规律很明显，横焊和仰焊比平焊易产生气孔。此外，根部间隙大些，产生的气孔数量少些，如图6-12所示。用多层焊时产生气孔的倾向大于单道焊时。
+
+
+      支撑内容:
+
+      [unit_003444; type=passage; page=325]
+
+      315
+
+
+      [unit_003454; type=passage; page=326]
+
+      气体保护焊工艺基础及应用
+
+
+      [unit_003447; type=passage; page=326]
+
+      在MIG/MAG焊时，一般都采用喷射过渡形式，这时电弧对气体保护作用具有如下特点：
+
+
+      资源文字化:
+
+      [unit_003446; type=figure; page=326]
+
+      题注: 图6-12 焊接位置与根部间隙
+
+      原始文字:
+
+      图6-12 焊接位置与根部间隙
+
+      资源标题: 图6-12 焊接位置与根部间隙
+
+      资源描述: 该图展示了MIG焊Al材料在特定参数（210 A, 21 V, 0.7 m/min）下，气孔数量与根部间隙G的关系。纵坐标为气孔数量（每200mm长焊缝中/个），横坐标为根部间隙G/mm。图中包含两条曲线：实线（空心圆点）和虚线（实心圆点）。两条曲线均显示气孔数量随根部间隙G的增加而减少，在G=1.5mm处达到最低点，随后在G=2.0mm处略有回升。图中还包含一个焊接接头示意图，标注了90°角度和根部间隙G的位置。'
+    images:
+    - unit_id: unit_003446
+      type: figure
+      page: 326
+      caption: 图6-12 焊接位置与根部间隙
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/d5209ee6a1616de941f5d8653ce7bf59431fc5c57573188d39c405df743e22f8.jpg
+  output: '规则组1
+
+    C: 焊接方法|MIG焊
+
+    R: 横焊|气孔产生倾向 —[大于]→ 平焊|气孔产生倾向
+
+    R: 仰焊|气孔产生倾向 —[大于]→ 平焊|气孔产生倾向
+
+    R: 根部间隙|增大 —[使]→ 气孔数量|减少
+
+    R: 多层焊|气孔产生倾向 —[大于]→ 单道焊|气孔产生倾向'
+- id: context_001455
+  route: text+table
+  difficulty_tags:
+  - 表格趋势
+  - 多输出
+  - 推断结论
+  construction_rationale: 交流短路过渡MIG/MAG焊限定当前试验。正文借图表明确I_en增大同时使过渡频率和焊接电流减小、熔滴增大，三个结果分别输出；熔滴增大被原文解释为熔化系数提高，再建立说明关系。表格用于核对趋势和固定试验参数，不强制转录每个单元格。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001455.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001455
+    prompt_id: rule_generator_routed__text__table
+    prompt_version: base@6+text@2+table@3
+  input:
+    text: '上下文包编号: context_001455
+
+
+      标题路径:
+
+      第6章 熔化极氩弧焊 > 6.6 先进的MIG焊方法 > 6.6.6 交流短路过渡MIG/MAG焊
+
+
+      核心正文:
+
+      [unit_004463; type=passage; page=447]
+
+      $I_{\mathrm{en}}$ 大小改变时短路过渡频率和焊接电流均发生改变。从图6-124和表6-55可见，随 $I_{\mathrm{en}}$ 增大，过渡频率和焊接电流都减小。而焊丝端头的熔滴却增大。这说明焊丝的熔化系数提高了。
+
+
+      支撑内容:
+
+      [unit_004471; type=passage; page=448]
+
+      气体保护焊工艺基础及应用
+
+
+      [unit_004470; type=passage; page=448]
+
+      （4）本周期控制法的热输入比较低表6-56表明了焊接方法不同时，当焊接参数大致接近的情况下，本周期控制法的热输入比传统短路过渡法的低。同时焊接工件上的温度循环如图6-126所示，也表明本周期控制法的温度较低。
+
+
+      资源文字化:
+
+      [unit_004468; type=table; page=448]
+
+      题注: 表 6-55 不同 ${I}_{\mathrm{{en}}}$ 时的焊接参数
+
+      表格正文:
+
+      <table><tr><td>\( {I}_{\mathrm{{en}}}/\mathrm{A} \)</td><td>焊接电流 /A</td><td>电弧电压 /V</td><td>过渡频率 \( /\mathrm{{Hz}} \)</td><td>保护气体</td><td>焊接速度
+      /(m/min)</td></tr><tr><td>50</td><td>100</td><td>22.6</td><td>116</td><td>\( {\mathrm{{CO}}}_{2} \)</td><td>0.45</td></tr><tr><td>100</td><td>96</td><td>22.7</td><td>102</td><td>\(
+      {\mathrm{{CO}}}_{2} \)</td><td>0.45</td></tr><tr><td>150</td><td>84</td><td>22.6</td><td>65</td><td>\( {\mathrm{{CO}}}_{2}
+      \)</td><td>0.45</td></tr></table>
+
+      原始文字:
+
+      <table><tr><td>\( {I}_{\mathrm{{en}}}/\mathrm{A} \)</td><td>焊接电流 /A</td><td>电弧电压 /V</td><td>过渡频率 \( /\mathrm{{Hz}} \)</td><td>保护气体</td><td>焊接速度
+      /(m/min)</td></tr><tr><td>50</td><td>100</td><td>22.6</td><td>116</td><td>\( {\mathrm{{CO}}}_{2} \)</td><td>0.45</td></tr><tr><td>100</td><td>96</td><td>22.7</td><td>102</td><td>\(
+      {\mathrm{{CO}}}_{2} \)</td><td>0.45</td></tr><tr><td>150</td><td>84</td><td>22.6</td><td>65</td><td>\( {\mathrm{{CO}}}_{2}
+      \)</td><td>0.45</td></tr></table>
+
+      资源标题: 表 6-55 不同 ${I}_{\mathrm{{en}}}$ 时的焊接参数
+
+      资源描述: 表格展示了不同 $I_{en}$ 值对应的焊接参数。表头包含：$I_{en}/A$、焊接电流/A、电弧电压/V、过渡频率/Hz、保护气体、焊接速度/(m/min)。数据行如下：1. 当 $I_{en}$ 为 50 A 时，焊接电流为
+      100 A，电弧电压为 22.6 V，过渡频率为 116 Hz，保护气体为 $CO_2$，焊接速度为 0.45 m/min。2. 当 $I_{en}$ 为 100 A 时，焊接电流为 96 A，电弧电压为 22.7 V，过渡频率为
+      102 Hz，保护气体为 $CO_2$，焊接速度为 0.45 m/min。3. 当 $I_{en}$ 为 150 A 时，焊接电流为 84 A，电弧电压为 22.6 V，过渡频率为 65 Hz，保护气体为 $CO_2$，焊接速度为
+      0.45 m/min。'
+    images:
+    - unit_id: unit_004468
+      type: table
+      page: 448
+      caption: 表 6-55 不同 ${I}_{\mathrm{{en}}}$ 时的焊接参数
+      path: /CODE/jm/Constella/GMAW/hybrid_ocr/images/d9e16d73b84a44a9247d0a5d5574448e804bb9dca6c3564cd83d83e616496f30.jpg
+  output: '规则组1
+
+    C: 焊接方法|交流短路过渡MIG/MAG焊
+
+    R: EN极性电流I_en|增大 —[使]→ 短路过渡频率|减小
+
+    R: EN极性电流I_en|增大 —[使]→ 焊接电流|减小
+
+    R: EN极性电流I_en|增大 —[使]→ 焊丝端头熔滴尺寸|增大
+
+    R: 焊丝端头熔滴尺寸|增大 —[说明]→ 焊丝熔化系数|提高'
+- id: context_001642
+  route: text
+  difficulty_tags:
+  - 初期用气
+  - 混合气体
+  - 越界内容删除
+  construction_rationale: 核心正文只讨论气体保护焊从单一气体发展到混合气体。氩、氦、氢、CO2是初期单一气体的示例，可作为一个列举状态；少量其他气体加入后性能更好，并扩大保护气体选择空间，保留相邻链。缓存初稿中的TIG烧损、母材和厚度规则均无本包证据，全部删除。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001642.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001642
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_001642
+
+
+      标题路径:
+
+      第2章 焊接电弧 > 2.5 焊接用保护气体 > 2.5.4 焊接方法与保护气体的选择
+
+
+      核心正文:
+
+      [unit_000893; type=passage; page=79]
+
+      气体保护焊应用初期主要使用单一气体，如氩、氦、氢和 $\mathrm{CO}_{2}$ 气等。后来，人们发现在这些气体中掺入少量的其他气体的混合气体具有更好的性能，这就为选择保护气体提供了更为广泛的空间。
+
+
+      支撑内容:
+
+      [unit_000891; type=passage; page=79]
+
+      近年来又出现了使用四元混合气体的TIME（Transferred Ionized Molten Energy）焊，它是一种高性能MAG焊，气体成分（体积分数）为 $\mathrm{Ar}65\% +\mathrm{He}26.5\%$
+      $+ \mathrm { C O } _ { 2 } 8 \% + \mathrm { O } _ { 2 } 0 . 5 \%$ 。这种方法采用 $\phi 1.2\mathrm{mm}$ 焊丝，焊丝伸出长度为 $25\sim 35\mathrm{mm}$
+      最大送丝速度达到 $28\sim 50\mathrm{m / min}$ 。可见，此方法是一种高熔敷效率的焊接方法，最大可达到 $450\mathrm{g / min}$ 。而 $\mathrm{CO}_{2}$ 用 $\phi 1.6\mathrm{mm}$
+      焊丝的最大送丝速度为 $16\mathrm{m / min}$ 时，其熔敷速度也仅为 $144\mathrm{g / min}$ 。TIME焊的关键是当快速送丝（焊接电流达700A左右）时熔滴过渡呈稳定的旋转喷射过渡，焊丝的“铅笔尖”端头以焊丝为轴心进行旋转，焊接过程十分稳定，没有飞溅，焊缝成形良好，这时再也看不到通常大电流MIG焊时旋转射流过渡的飞溅四射现象。
+
+
+      [unit_000892; type=title; page=79]
+
+      2.5.4 焊接方法与保护气体的选择
+
+
+      [unit_000894; type=passage; page=79]
+
+      选择保护气体要根据母材的材质和焊件的厚度以及焊接方法来选择。母材金属在电弧的高温作用下，将与保护气体发生不同的冶金反应；焊件厚度对电弧功率也有不同的要求；焊接方法对保护气体也有选择，如TIG焊不宜用氧化性气体，以防钨极烧损，它只能选择惰性气体。这些就是选择保护气体的依据，同时还要考虑到焊接质量、焊接生产率和降低成本等因素。实际应用中保护气体的种类及应用特点见表2-18。'
+  output: '规则组1
+
+    C: 焊接方法|气体保护焊
+
+    R: 保护气体类型|氩、氦、氢、CO2等单一气体 —[对应]→ 应用阶段|初期
+
+    R: 单一保护气体|掺入少量其他气体 —[形成]→ 保护气体类型|混合气体
+
+    R: 保护气体类型|混合气体 —[获得]→ 保护气体性能|更好
+
+    R: 混合气体|性能更好 —[扩大]→ 保护气体选择空间|更广泛'
+- id: context_001655
+  route: text
+  difficulty_tags:
+  - 备选接头拆分
+  - 覆盖效果
+  - 补救措施
+  construction_rationale: 接头形式直接参与覆盖能力关系，C为空。水平对接、内角、外角和端角是四种备选接头，当前DSL不使用OR，因此逐项拆分；前两者保护效果较好，后两者较差。较差效果再触发加强保护的必要措施，不把四种接头用“及”或“或”塞进同一状态。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001655.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001655
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_001655
+
+
+      标题路径:
+
+      第2章 焊接电弧 > 2.5 焊接用保护气体 > 2.5.5 保护气流的效果
+
+
+      核心正文:
+
+      [unit_000936; type=passage; page=84]
+
+      5）焊接接头形式。焊接接头形式影响保护气体的覆盖能力。焊接水平对接及内角焊缝保护效果较好；焊接外角或端角焊缝时，保护效果较差。为此可以采取必要的措施加强保护效果。
+
+
+      支撑内容:
+
+      [unit_000935; type=passage; page=83]
+
+      73
+
+
+      [unit_000945; type=passage; page=84]
+
+      气体保护焊工艺基础及应用
+
+
+      [unit_000937; type=title; page=84]
+
+      2.6 磁场对电弧的作用
+
+
+      [unit_000938; type=passage; page=84]
+
+      焊接电弧的弧柱区由等离子体构成。宏观上电弧呈中性，但微观上却是由等量的正、负电荷组成，且按电场方向运动形成电流。因此磁场存在时，磁场对运动电子流及离子流产生力的作用，如同载流导线在磁场中一样。电弧受力方向是由电流、磁场和力三者根据洛伦兹力按左手定则确定。电弧周围的磁场有两种来源：一种为电弧自身的电流所产生的磁场，称为自身磁场；另一种为外加磁场。下面分别讨论这两种磁场对电弧的作用。'
+  output: '规则组1
+
+    C: 无
+
+    R: 焊接接头形式|水平对接 —[对应]→ 保护气体覆盖效果|较好
+
+    R: 焊接接头形式|内角焊缝 —[对应]→ 保护气体覆盖效果|较好
+
+    R: 焊接接头形式|外角焊缝 —[对应]→ 保护气体覆盖效果|较差
+
+    R: 焊接接头形式|端角焊缝 —[对应]→ 保护气体覆盖效果|较差
+
+    R: 保护气体覆盖效果|较差 —[要求采取]→ 加强保护措施|必要'
+- id: context_001872
+  route: text
+  difficulty_tags:
+  - 材料成分
+  - 并列实例
+  - 属性绑定
+  construction_rationale: 本段只给出三种钨极材料性能良好的结论。锆钨极、含1% La2O3的镧钨极和含2% Y2O3的钇钨极是备选材料，分别输出；成分和比例必须保留在材料状态内。结果统一绑定“综合性能|良好”，避免初稿中“性能对应性能”的对象属性重复。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001872.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001872
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_001872
+
+
+      标题路径:
+
+      第4章 钨极惰性气体保护焊 > 4.3 TIG焊的焊接材料 > 4.3.1 钨极材料
+
+
+      核心正文:
+
+      [unit_001896; type=passage; page=168]
+
+      研究表明，锆钨极、镧钨极（ $\mathrm{W} + \mathrm{La}_2\mathrm{O}_31\%$ ）和钇钨极（ $\mathrm{W} + \mathrm{Y}_2\mathrm{O}_32\%$ ）等都有良好的性能。
+
+
+      支撑内容:
+
+      [unit_001894; type=passage; page=168]
+
+      铈钨极与钍钨极相比有以下优点：
+
+
+      [unit_001895; type=passage; page=168]
+
+      1）在相同焊接参数下，弧束较细长，光亮带较窄，温度更集中。2）最大许用电流密度可增加 $5\% \sim 8\%$3）电极烧损率下降，修磨次数减少，使用寿命延长。4）直流焊接时，阴极压降降低 $10\%$ ，比钍钨极更容易引弧，电弧稳定性好。
+
+
+      [unit_001897; type=passage; page=168]
+
+      国产钨极的化学成分见表4-6。'
+  output: '规则组1
+
+    C: 无
+
+    R: 钨极材料|锆钨极 —[具有]→ 综合性能|良好
+
+    R: 钨极材料|镧钨极W + La2O3 1% —[具有]→ 综合性能|良好
+
+    R: 钨极材料|钇钨极W + Y2O3 2% —[具有]→ 综合性能|良好'
+- id: context_001900
+  route: text
+  difficulty_tags:
+  - 极性比较
+  - 冷却机理
+  - 容量排序
+  construction_rationale: TIG焊是共同场景。钨极接负时，电子发射带走能量，先增强冷却再提高电流容量；钨极接正直接对应较小容量。交流容量位于接负与接正之间，作为范围比较保留。表4-10只被引用为不同成分、直径的数值来源，本包没有关联表格资源，不补写具体数值。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_001900.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_001900
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_001900
+
+
+      标题路径:
+
+      第4章 钨极惰性气体保护焊 > 4.4 TIG焊方法 > 4.4.1 直流TIG焊
+
+
+      核心正文:
+
+      [unit_001999; type=passage; page=178]
+
+      电极的极性不同时直接影响钨极的受热情况和钨极的电流容量。钨极接负时，因钨极发射电子带走能量对钨极有较强的冷却作用，所以此时电流容量大；而钨极接正时，则允许电流容量小，而交流介于两者之间。在不同极性的条件下，不同成分与直径钨极的电流容量见表4-10。
+
+
+      支撑内容:
+
+      [unit_002006; type=passage; page=178]
+
+      气体保护焊工艺基础及应用
+
+
+      [unit_001998; type=passage; page=178]
+
+      另一方面，反接时钨极为阳极，其任务是接收电子及其携带的大量能量。因而钨极易产生过热，甚至熔化。
+
+
+      [unit_002000; type=passage; page=178]
+
+      （单位：A）'
+  output: '规则组1
+
+    C: 焊接方法|TIG焊
+
+    R: 钨极极性|接负 —[使]→ 电子发射带走能量|增加
+
+    R: 电子发射带走能量|增加 —[增强]→ 钨极冷却作用|增强
+
+    R: 钨极冷却作用|增强 —[使]→ 钨极电流容量|大
+
+    R: 钨极极性|接正 —[对应]→ 钨极电流容量|小
+
+    R: 钨极极性|交流 —[对应]→ 钨极电流容量|介于接负与接正之间'
+- id: context_002017
+  route: text
+  difficulty_tags:
+  - 标准要求
+  - 成分上下限
+  - 数值绑定
+  construction_rationale: CO2作为焊接保护气体是共同适用场景。GB/T6052—1993Ⅱ类一级是两个成分限值的共同标准来源：CO2体积分数不低于99.5%，水分质量分数不高于0.005%。两个数值分别绑定正确成分与分数类型，不把“纯度不低于标准”重复放入R输入。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_002017.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_002017
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_002017
+
+
+      标题路径:
+
+      第5章 $\mathrm{CO}_{2}$ 气体保护焊 > 5.2 $\mathrm{CO}_{2}$ 焊的冶金特点与焊接材料 > 5.2.5 $\mathbf{CO}_2$ 气体保护焊的焊接材料
+
+
+      核心正文:
+
+      [unit_002530; type=passage; page=228]
+
+      $\mathrm{CO}_{2}$ 作为保护气体，其纯度应不低于GB/T6052—1993《二氧化碳气体质量和分析方法》中Ⅱ类一级气体的规定： $\mathrm{CO}_{2} \geqslant 99.5\%$ （体积分数）、 $\mathrm{H}_{2}\mathrm{O}
+      \leqslant 0.005\%$ （质量分数）。
+
+
+      支撑内容:
+
+      [unit_002528; type=title; page=228]
+
+      5.2.5 $\mathbf{CO}_2$ 气体保护焊的焊接材料
+
+
+      [unit_002529; type=passage; page=228]
+
+      1. $\mathrm{CO}_{2}$ 气体
+
+
+      [unit_002531; type=passage; page=228]
+
+      $\mathrm{CO}_{2}$ 气体是无色、无味和无毒的气体，其密度为空气密度的1.5倍，沸点为 $-78.9^{\circ} \mathrm{C}$ ，在常压下冷却时，气体将直接变成固体干冰。升高温度时，固态 $\mathrm{CO}_{2}$
+      又直接变成气体。 $\mathrm{CO}_{2}$ 气体在较高压力下能变成无色液体，其密度随温度的变化而变化。当温度低于 $-11^{\circ} \mathrm{C}$ 时，液态 $\mathrm{CO}_{2}$ 比水重；当温度高于
+      $-11^{\circ} \mathrm{C}$ 时，它比水轻。在 $0^{\circ} \mathrm{C}$ 和 $0.1 \mathrm{MPa}$ 下， $1 \mathrm{~kg}$ 液态 $\mathrm{CO}_{2}$
+      可蒸发为 $509 \mathrm{~L}$ 气态 $\mathrm{CO}_{2}$ 。通常容量为 $40 \mathrm{~L}$ 的标准钢瓶可以灌装 $25 \mathrm{~kg}$ 液态 $\mathrm{CO}_{2}$
+      ，也就是一瓶液态 $\mathrm{CO}_{2}$ 可以汽化成 $12725 \mathrm{~L}$ 气体。如果焊接的气体流量为 $15 \mathrm{~L} / \mathrm{min}$ 时，大约可以连续使用 $14 \mathrm{~h}$
+      。
+
+
+      [unit_002532; type=passage; page=228]
+
+      焊接用 $\mathrm{CO}_{2}$ 气体以液态形式储存于气瓶中供用户使用。气瓶涂银白色，写有“ $\mathrm{CO}_{2}$ ”标记。气瓶中 $\mathrm{CO}_{2}$ 的数量只能用称重法测定，而不能用气瓶内的压力来测定。气瓶内气体压力的大小不代表瓶中液态
+      $\mathrm{CO}_{2}$ 的多少。因为气瓶内除存在液态 $\mathrm{CO}_{2}$ 外，还存在气态 $\mathrm{CO}_{2}$ 。瓶内的气体压力是气态 $\mathrm{CO}_{2}$ 的饱和蒸气压，该压力的大小与环境的温度有关。当温度为
+      $0 \sim 20^{\circ} \mathrm{C}$ 时，瓶中压力为 $5 \sim 7 \mathrm{MPa}$ 。'
+  output: '规则组1
+
+    C: 保护气体|焊接用CO2
+
+    R: 气体标准等级|GB/T6052—1993Ⅱ类一级 —[要求]→ CO2体积分数|≥99.5%
+
+    R: 气体标准等级|GB/T6052—1993Ⅱ类一级 —[要求]→ H2O质量分数|≤0.005%'
+- id: context_002026
+  route: text
+  difficulty_tags:
+  - 材料定义
+  - 共同制造步骤
+  - 组成关系
+  construction_rationale: 药芯焊丝直接参与定义和组成关系，因此C为空。薄钢带卷成钢管、填充药粉和拉拔是原文明示共同完成的制造过程，用加号连接后生成药芯焊丝；圆形和异型只是钢管截面的备选形状，不写入共同条件。组成部分把金属外皮和药粉分别输出，便于入图检索。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_002026.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_002026
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_002026
+
+
+      标题路径:
+
+      第5章 $\mathrm{CO}_{2}$ 气体保护焊 > 5.2 $\mathrm{CO}_{2}$ 焊的冶金特点与焊接材料 > 5.2.5 $\mathbf{CO}_2$ 气体保护焊的焊接材料
+
+
+      核心正文:
+
+      [unit_002569; type=passage; page=233]
+
+      （2）药芯焊丝 药芯焊丝是在将薄钢带卷成圆形钢管或异型钢管的同时，在其中填满一定成分的药粉，经拉拔而成的一种焊丝。可见药芯焊丝是由金属外皮和药芯中的药粉两部分组成的。
+
+
+      支撑内容:
+
+      [unit_002567; type=passage; page=233]
+
+      的。为保证送丝速度稳定，要求焊丝表面镀铜，表面光滑，不得有肉眼可见的裂纹、麻点、锈蚀，镀铜层应均匀牢固。
+
+
+      [unit_002570; type=passage; page=233]
+
+      1）药芯焊丝按截面形状、材料和用途可分成多种类型。
+
+
+      [unit_002571; type=passage; page=233]
+
+      ① 按横截面的形状分类。根据横截面的形状药芯焊丝可分为简单O形截面和复杂截面两大类，如图5-19所示。'
+  output: '规则组1
+
+    C: 无
+
+    R: 薄钢带|卷成钢管 + 药粉|填入钢管 + 焊丝坯料|拉拔 —[制成]→ 焊丝类型|药芯焊丝
+
+    R: 药芯焊丝|组成 —[包含]→ 金属外皮|存在
+
+    R: 药芯焊丝|组成 —[包含]→ 药芯药粉|存在'
+- id: context_002301
+  route: text
+  difficulty_tags:
+  - 脉冲控滴
+  - 非因果并列事实
+  - 效率环境链
+  construction_rationale: 一个脉冲过渡一个熔滴限定当前脉冲MIG/MAG场景。熔滴直径约等于焊丝直径是并列特征，不与获取能量少用加号组成温度降低的共同原因；温度低分别提高熔化系数并减少烟雾，随后连接熔化效率、合金烧损和施工环境，保持原文因果层次。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_002301.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_002301
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_002301
+
+
+      标题路径:
+
+      第6章 熔化极氩弧焊 > 6.4 脉冲MIG/MAG焊 > 6.4.2 合理的熔滴过渡形式
+
+
+      核心正文:
+
+      [unit_003597; type=passage; page=340]
+
+      1）一个脉冲过渡一个熔滴实现了脉冲电流对熔滴过渡的控制。2）熔滴直径大致等于焊丝直径，熔滴从电弧获取能量小，则熔滴的温度低。所以焊丝的熔化系数高，也就是提高了焊丝的熔化效率。3）熔滴的温度低，则焊接烟雾少。这样，降低了合金元素的烧损，又改善了施工环境。
+
+
+      支撑内容:
+
+      [unit_003595; type=passage; page=340]
+
+      第一种熔滴过渡形式为一个脉冲过渡几个熔滴。第一个熔滴为与焊丝直径相近的较大的熔滴，而随后为一串细滴。问题出现在这些细滴和锥形电弧的形态。这时容易产生飞溅和烟尘，焊缝成形有指状熔深，所以不十分理想。
+
+
+      [unit_003596; type=passage; page=340]
+
+      第二种熔滴过渡形式为一个脉冲过渡一个熔滴。它具有射滴过渡模式。其主要特点如下：
+
+
+      [unit_003599; type=passage; page=340]
+
+      330
+
+
+      [unit_003612; type=passage; page=341]
+
+      第6章 熔化极氩弧焊'
+  output: '规则组1
+
+    C: 焊接方法|脉冲MIG/MAG焊 + 熔滴过渡方式|一个脉冲过渡一个熔滴
+
+    R: 脉冲电流|控制 —[实现]→ 熔滴过渡状态|受控
+
+    R: 熔滴|直径 —[约等于]→ 焊丝|直径
+
+    R: 熔滴从电弧获取能量|小 —[使]→ 熔滴温度|低
+
+    R: 熔滴温度|低 —[使]→ 焊丝熔化系数|高
+
+    R: 焊丝熔化系数|高 —[提高]→ 焊丝熔化效率|提高
+
+    R: 熔滴温度|低 —[使]→ 焊接烟雾|少
+
+    R: 焊接烟雾|少 —[降低]→ 合金元素烧损|降低
+
+    R: 焊接烟雾|少 —[改善]→ 施工环境|改善'
+- id: context_002485
+  route: text
+  difficulty_tags:
+  - 适用厚度
+  - 双频参数
+  - 防止补造趋势
+  construction_rationale: 薄铝工件及1~5mm厚度是两个频率范围的共同适用条件。高频脉冲频率50~250Hz、低频脉动频率0.1~3Hz分别绑定其参数名称，不把频率反向连接到工件厚度。核心正文没有给出厚度减少时频率或送丝幅值如何变化，因此删除缓存初稿补造的两条趋势。
+  source:
+    context_cache: outputs/rule_extraction_full_20260829/cache/contexts/context_002485.json
+    model_output_cache: outputs/rule_extraction_full_20260829/cache/model_outputs/context_002485
+    prompt_id: rule_generator_routed__text
+    prompt_version: base@6+text@2
+  input:
+    text: '上下文包编号: context_002485
+
+
+      标题路径:
+
+      第6章 熔化极氩弧焊 > 6.6 先进的MIG焊方法 > 6.6.4 铝合金双脉冲MIG焊
+
+
+      核心正文:
+
+      [unit_004308; type=passage; page=431]
+
+      对于厚度为 $1\sim 5\mathrm{mm}$ 的薄铝工件，高频率 $f_{\mathrm{H}} = 50\sim 250\mathrm{Hz}$ ，低频脉冲频率 $f_{\mathrm{L}} = 0.1\sim 3\mathrm{Hz}_{\circ}$
+
+
+      支撑内容:
+
+      [unit_004307; type=passage; page=431]
+
+      这种脉动送丝的焊机，首先根据工件厚度选择平均送丝速度和送丝脉动幅值。如平均送丝速度为 $8\mathrm{m / min}$ ，脉冲幅值为 $2\mathrm{m / min}$ ，则可表示为送丝速度为 $(8\pm 2)\mathrm{m
+      / min}$ （即 $v_{\mathrm{max}} = 10\mathrm{m / min}$ 和 $v_{\mathrm{min}} = 6\mathrm{m / min})$ 。
+
+
+      [unit_004309; type=passage; page=431]
+
+      选择焊接参数的基本原则是，随着工件厚度减少，低频脉动频率 $f_{\mathrm{L}}$ 增大，送丝速度的幅值减小。
+
+
+      [unit_004310; type=passage; page=431]
+
+      双脉冲焊接参数见表6-53。'
+  output: '规则组1
+
+    C: 焊接对象|薄铝工件 + 工件厚度|1~5mm
+
+    R: 双脉冲MIG焊|高频脉冲参数 —[对应]→ 高频脉冲频率f_H|50~250Hz
+
+    R: 双脉冲MIG焊|低频脉动参数 —[对应]→ 低频脉动频率f_L|0.1~3Hz'
