@@ -17,6 +17,7 @@ PROMPT_FILES = {
     "concept_merge": "concept_merge_v1.yaml",
     "concept_merge_review": "concept_merge_review_v1.yaml",
     "object_alignment": "object_alignment_v1.yaml",
+    "state_object_alignment": "state_object_alignment_v1.yaml",
     "state_normalization": "state_normalization_v1.yaml",
 }
 
@@ -75,7 +76,18 @@ class SemanticAlignmentRunner:
             futures = {pool.submit(self._process, package): index for index, package in pending}
             for future in as_completed(futures):
                 index = futures[future]
-                results[index] = future.result()
+                try:
+                    results[index] = future.result()
+                except Exception as error:
+                    package = selected[index]
+                    results[index] = {
+                        "package_id": package.get("package_id"),
+                        "package_type": package.get("package_type"),
+                        "status": "failed",
+                        "attempt_count": 0,
+                        "covered_item_count": 0,
+                        "errors": [f"unhandled:{type(error).__name__}: {error}"],
+                    }
         final = [row for row in results if row is not None]
         success = [row for row in final if row["status"] == "success"]
         report = {
@@ -92,6 +104,14 @@ class SemanticAlignmentRunner:
             ),
             "elapsed_seconds": round(time.monotonic() - started, 3),
         }
+        if report["package_type"] == "state_normalization":
+            group_count = sum(row.get("quality", {}).get("state_group_count", 0) for row in success)
+            explicit_count = sum(
+                row.get("quality", {}).get("explicit_subject_group_count", 0) for row in success
+            )
+            report["state_group_count"] = group_count
+            report["explicit_subject_group_count"] = explicit_count
+            report["explicit_subject_rate"] = round(explicit_count / group_count, 4) if group_count else 1.0
         return final, report
 
     def _process(self, package: dict[str, Any]) -> dict[str, Any]:
@@ -128,7 +148,13 @@ class SemanticAlignmentRunner:
                     "covered_item_count": covered,
                     "output": value,
                 }
-                self._store(package, result)
+                quality = self._quality(package, value)
+                if quality:
+                    result["quality"] = quality
+                try:
+                    self._store(package, result)
+                except Exception as error:
+                    result["cache_write_error"] = f"{type(error).__name__}: {error}"
                 return result
             except Exception as error:
                 errors.append(f"{type(error).__name__}: {error}")
@@ -147,8 +173,24 @@ class SemanticAlignmentRunner:
             "errors": errors,
             "raw_outputs": raw_outputs,
         }
-        self._store(package, result)
+        try:
+            self._store(package, result)
+        except Exception as error:
+            result["cache_write_error"] = f"{type(error).__name__}: {error}"
         return result
+
+    @staticmethod
+    def _quality(package: dict[str, Any], value: dict[str, Any]) -> dict[str, int] | None:
+        if package.get("package_type") != "state_normalization":
+            return None
+        names = [package["concept"].get("name"), *(package["concept"].get("aliases") or [])]
+        normalized_names = {"".join(str(name).split()).lower() for name in names if name}
+        groups = value.get("groups") or []
+        explicit = sum(
+            any(name in "".join(str(group.get("canonical") or "").split()).lower() for name in normalized_names)
+            for group in groups
+        )
+        return {"state_group_count": len(groups), "explicit_subject_group_count": explicit}
 
     def _validate(self, package: dict[str, Any], value: dict[str, Any]) -> int:
         if not isinstance(value, dict):
@@ -160,6 +202,8 @@ class SemanticAlignmentRunner:
             return self._validate_concept_merge_review(package, value)
         if package_type == "object_alignment":
             return self._validate_object_alignment(package, value)
+        if package_type == "state_object_alignment":
+            return self._validate_state_object_alignment(package, value)
         if package_type == "state_normalization":
             return self._validate_state_normalization(package, value)
         raise ValueError(f"Unsupported package type: {package_type}")
@@ -222,21 +266,33 @@ class SemanticAlignmentRunner:
         return len(package["cases"])
 
     @staticmethod
+    def _validate_state_object_alignment(package: dict[str, Any], value: dict[str, Any]) -> int:
+        rows = value.get("alignments")
+        if not isinstance(rows, list):
+            raise ValueError("alignments must be a list")
+        cases = {item["state_id"]: item for item in package["cases"]}
+        if len(rows) != len(cases) or {item.get("state_id") for item in rows} != set(cases):
+            raise ValueError("alignments must cover every state exactly once")
+        package_concept_ids = {
+            candidate["id"] for case in package["cases"] for candidate in case["candidates"]
+        }
+        allowed = package_concept_ids | {"INVALID", "UNRESOLVED"}
+        if any(row.get("concept_id") not in allowed for row in rows):
+            raise ValueError("concept_id must be a package candidate, INVALID, or UNRESOLVED")
+        return len(cases)
+
+    @staticmethod
     def _validate_state_normalization(package: dict[str, Any], value: dict[str, Any]) -> int:
         groups = value.get("groups")
         exceptions = value.get("exceptions")
         if not isinstance(groups, list) or not isinstance(exceptions, list):
             raise ValueError("groups and exceptions must be lists")
         allowed = {item["id"] for item in package["states"]}
-        concept_name = "".join(str(package["concept"]["name"]).split()).lower()
         covered: list[str] = []
         for group in groups:
             members = group.get("members")
             if not isinstance(group.get("canonical"), str) or not group["canonical"].strip():
                 raise ValueError("every state group requires canonical text")
-            canonical = "".join(group["canonical"].split()).lower()
-            if concept_name and concept_name not in canonical:
-                raise ValueError("canonical state must contain the canonical concept name")
             if not isinstance(members, list) or not members:
                 raise ValueError("every state group requires members")
             covered.extend(members)

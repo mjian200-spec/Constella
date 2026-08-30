@@ -64,3 +64,25 @@ def test_merge_review_deduplicates_proposed_pairs():
     assert len(packages) == 1
     assert len(packages[0]["cases"]) == 1
     assert {packages[0]["cases"][0][side]["id"] for side in ("left", "right")} == {"c1", "c2"}
+
+
+def test_object_and_concept_package_filters_select_only_requested_ids():
+    builder = SemanticPackageBuilder(_inputs())
+    concept_packages = builder.concept_merge_packages(anchor_ids={"c1"})
+    assert len(concept_packages) == 1
+    assert [case["anchor"]["id"] for case in concept_packages[0]["cases"]] == ["c1"]
+    object_id = builder.object_rows["电流"]["object_id"]
+    object_packages = builder.object_alignment_packages(object_ids={object_id})
+    assert len(object_packages) == 1
+    assert [case["object_id"] for case in object_packages[0]["cases"]] == [object_id]
+
+
+def test_state_object_packages_expand_reparse_object_to_state_cases():
+    builder = SemanticPackageBuilder(_inputs())
+    object_id = builder.object_rows["电流"]["object_id"]
+    packages = builder.state_object_alignment_packages({object_id})
+    assert len(packages) == 1
+    case = packages[0]["cases"][0]
+    assert case["state_id"] == "s1"
+    assert case["object_name"] == "电流"
+    assert case["state_text"] == "提高"

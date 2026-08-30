@@ -68,11 +68,15 @@ def assemble_concepts(
             id_map[member_id] = representative
         source = by_id[representative]
         names: list[str] = []
+        alignment_examples: list[str] = []
         for member_id in member_ids:
             row = by_id[member_id]
             for name in [row.get("canonical_name"), *(row.get("aliases") or [])]:
                 if name and normalize_text(str(name)) not in {normalize_text(item) for item in names}:
                     names.append(str(name))
+            for example in row.get("alignment_examples") or []:
+                if example and example not in alignment_examples:
+                    alignment_examples.append(str(example))
         canonical = str(source["canonical_name"])
         definitions = [by_id[value].get("definition") for value in member_ids if by_id[value].get("definition")]
         evidence_ids = list(dict.fromkeys(
@@ -90,13 +94,20 @@ def assemble_concepts(
             "source_concept_ids": sorted(member_ids),
             "source_package_ids": package_ids,
             "evidence_ids": evidence_ids,
+            "alignment_examples": alignment_examples[:10],
         })
 
     relations: list[dict[str, Any]] = []
     seen_relations: set[tuple[str, str, str]] = set()
+    missing_relation_endpoint_count = 0
     for row in inputs.relations:
-        child = id_map[str(row["child_concept_id"])]
-        parent = id_map[str(row["parent_concept_id"])]
+        source_child = str(row.get("child_concept_id") or "")
+        source_parent = str(row.get("parent_concept_id") or "")
+        if source_child not in id_map or source_parent not in id_map:
+            missing_relation_endpoint_count += 1
+            continue
+        child = id_map[source_child]
+        parent = id_map[source_parent]
         key = (child, str(row["type"]), parent)
         if child == parent or key in seen_relations:
             continue
@@ -109,6 +120,7 @@ def assemble_concepts(
         "llm_merge_group_count": merge_group_count,
         "source_relation_count": len(inputs.relations),
         "merged_relation_count": len(relations),
+        "missing_relation_endpoint_count": missing_relation_endpoint_count,
     }
     return sorted(concepts, key=lambda row: row["concept_id"]), relations, id_map, report
 
@@ -119,31 +131,42 @@ def assemble_object_alignments(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     alignments: list[dict[str, Any]] = []
     new_concepts: dict[str, dict[str, Any]] = {}
+    existing_concept_ids = {str(row["concept_id"]) for row in concepts}
     for result in results:
         if result.get("status") != "success":
             continue
         package_path = result.get("_package")
-        object_names = package_path or {}
+        object_cases = package_path or {}
         for row in result["output"].get("alignments", []):
             concept_id = row["concept_id"]
-            object_name = str(object_names.get(row["object_id"], row["object_id"]))
-            alignment = {**row, "object_name": object_name}
+            case = object_cases.get(row["object_id"], {})
+            object_name = str(case.get("name") or row["object_id"])
+            alignment = {
+                **row,
+                "object_name": object_name,
+                "frequency": int(case.get("frequency") or 0),
+                "state_examples": list(case.get("states") or []),
+            }
             if concept_id == "NEW":
                 concept_id = stable_id("concept", {"new_object": normalize_text(object_name)})
-                new_concepts.setdefault(concept_id, {
-                    "concept_id": concept_id,
-                    "canonical_name": object_name,
-                    "aliases": [],
-                    "definition": None,
-                    "definition_type": None,
-                    "source_package_ids": [],
-                    "evidence_ids": [],
-                    "audit_status": "alignment_created",
-                    "origin_depth": 0,
-                    "source_concept_ids": [],
-                })
                 alignment["concept_id"] = concept_id
-                alignment["decision"] = "NEW"
+                if concept_id in existing_concept_ids:
+                    alignment["decision"] = "ALIGNED"
+                else:
+                    new_concepts.setdefault(concept_id, {
+                        "concept_id": concept_id,
+                        "canonical_name": object_name,
+                        "aliases": [],
+                        "definition": None,
+                        "definition_type": None,
+                        "source_package_ids": [],
+                        "evidence_ids": [],
+                        "audit_status": "alignment_created",
+                        "origin_depth": 0,
+                        "source_concept_ids": [],
+                        "alignment_examples": list(case.get("states") or [])[:5],
+                    })
+                    alignment["decision"] = "NEW"
             elif concept_id == "REPARSE":
                 alignment["decision"] = "REPARSE"
             elif concept_id == "INVALID":
@@ -160,6 +183,12 @@ def assemble_object_alignments(
         "reparse_object_count": counts["REPARSE"],
         "invalid_object_count": counts["INVALID"],
         "usable_rate": round((counts["ALIGNED"] + counts["NEW"]) / len(alignments), 4) if alignments else 0.0,
+        "weighted_occurrence_count": sum(int(row.get("frequency") or 0) for row in alignments),
+        "weighted_usable_rate": round(
+            sum(int(row.get("frequency") or 0) for row in alignments if row["decision"] in {"ALIGNED", "NEW"})
+            / max(1, sum(int(row.get("frequency") or 0) for row in alignments)),
+            4,
+        ),
     }
     return alignments, final_concepts, report
 
@@ -201,6 +230,42 @@ def assemble_states(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
         "canonical_state_count": len({row["canonical_state_id"] for row in normalized if row["canonical_state_id"]}),
     }
     return normalized, report
+
+
+def assemble_state_object_alignments(
+    results: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for result in results:
+        if result.get("status") != "success":
+            continue
+        cases = result.get("_package") or {}
+        for decision in result["output"].get("alignments", []):
+            case = cases.get(decision["state_id"], {})
+            concept_id = decision["concept_id"]
+            rows.append({
+                **decision,
+                "source_object_id": case.get("source_object_id"),
+                "object_name": case.get("object_name"),
+                "state_text": case.get("state_text"),
+                "frequency": int(case.get("frequency") or 0),
+                "decision": "ALIGNED" if concept_id not in {"INVALID", "UNRESOLVED"} else concept_id,
+            })
+    counts = Counter(row["decision"] for row in rows)
+    total_weight = sum(int(row.get("frequency") or 0) for row in rows)
+    aligned_weight = sum(
+        int(row.get("frequency") or 0) for row in rows if row["decision"] == "ALIGNED"
+    )
+    report = {
+        "state_alignment_count": len(rows),
+        "aligned_count": counts["ALIGNED"],
+        "invalid_count": counts["INVALID"],
+        "unresolved_count": counts["UNRESOLVED"],
+        "state_alignment_rate": round(counts["ALIGNED"] / len(rows), 4) if rows else 0.0,
+        "weighted_occurrence_count": total_weight,
+        "weighted_alignment_rate": round(aligned_weight / total_weight, 4) if total_weight else 0.0,
+    }
+    return rows, report
 
 
 def write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:

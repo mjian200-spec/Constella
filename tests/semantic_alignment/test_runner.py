@@ -105,3 +105,53 @@ def test_concept_review_only_accepts_proposed_pairs():
         results, report = runner.run([package])
     assert results[0]["status"] == "success"
     assert report["decision_coverage_rate"] == 1.0
+
+
+def test_state_canonical_without_concept_name_is_quality_warning_not_protocol_failure():
+    package = {
+        "package_id": "p1", "package_type": "state_normalization",
+        "concept": {"id": "c1", "name": "焊缝成形", "aliases": []},
+        "states": [{"id": "s1"}],
+    }
+    client = FakeClient({"groups": [{"canonical": "良好成形", "members": ["s1"]}], "exceptions": []})
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, report = runner.run([package])
+    assert results[0]["status"] == "success"
+    assert results[0]["quality"]["explicit_subject_group_count"] == 0
+    assert report["explicit_subject_rate"] == 0.0
+
+
+def test_state_object_alignment_accepts_only_package_candidates_or_terminal_values():
+    package = {
+        "package_id": "p1", "package_type": "state_object_alignment",
+        "cases": [{"state_id": "s1", "candidates": [{"id": "c1"}]}],
+    }
+    client = FakeClient({"alignments": [{"state_id": "s1", "concept_id": "c1"}]})
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, report = runner.run([package])
+    assert results[0]["status"] == "success"
+    assert report["decision_coverage_rate"] == 1.0
+
+
+def test_runner_records_unhandled_package_failure_without_aborting_report():
+    package = {
+        "package_id": "p1", "package_type": "missing_prompt_type", "cases": [{"id": "x"}],
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=FakeClient({}),
+        )
+        results, report = runner.run([package])
+    assert results[0]["status"] == "failed"
+    assert results[0]["errors"][0].startswith("unhandled:KeyError:")
+    assert report["failed_count"] == 1
+    assert report["protocol_success_rate"] == 0.0

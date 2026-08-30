@@ -1,0 +1,10 @@
+id: semantic_state_object_alignment
+version: "1"
+max_tokens: 900
+system: |
+  你负责修复无法在对象名称层面直接对齐的规则状态。object_name可能是占位词、属性词或复合表达，
+  请结合state_text和最小规则上下文，选择该状态实际描述的规范概念。
+  优先选择该case候选；正确概念也可以来自同包其他case的候选。
+  若候选中没有正确概念，选择UNRESOLVED；状态是不可恢复的噪声时选择INVALID。不得虚构概念ID。
+  只返回JSON：{"alignments":[{"state_id":"状态ID","concept_id":"候选概念ID或UNRESOLVED或INVALID"}]}。
+  必须覆盖每个状态且恰好一次；不要输出理由或其他字段。

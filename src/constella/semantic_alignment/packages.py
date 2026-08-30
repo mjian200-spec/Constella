@@ -127,13 +127,19 @@ class SemanticPackageBuilder:
                     self.name_to_concepts[normalize_text(str(name))].append(concept_id)
 
     def concept_merge_packages(
-        self, *, candidates_per_anchor: int = 5, anchors_per_package: int = 10,
+        self,
+        *,
+        candidates_per_anchor: int = 5,
+        anchors_per_package: int = 10,
+        anchor_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         signatures = {concept_id: self._concept_signature(row) for concept_id, row in self.concepts.items()}
         index = CharNgramIndex(signatures)
         seen_pairs: set[tuple[str, str]] = set()
         cases: list[dict[str, Any]] = []
-        for concept_id in sorted(self.concepts):
+        for concept_id in sorted(anchor_ids if anchor_ids is not None else self.concepts):
+            if concept_id not in self.concepts:
+                continue
             candidates: list[dict[str, Any]] = []
             for candidate_id, _score in index.query(
                 signatures[concept_id], top_k=candidates_per_anchor * 3, exclude={concept_id},
@@ -155,6 +161,7 @@ class SemanticPackageBuilder:
         *,
         candidates_per_object: int = 8,
         objects_per_package: int = 15,
+        object_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
         signatures = {concept_id: self._concept_signature(row) for concept_id, row in available.items()}
@@ -166,6 +173,8 @@ class SemanticPackageBuilder:
         )
         for object_key in ordered_object_keys:
             item = self.object_rows[object_key]
+            if object_ids is not None and item["object_id"] not in object_ids:
+                continue
             signature = "\n".join([
                 item["name"], *item["states"],
                 *(context["relation"] for context in item["contexts"] if context.get("relation")),
@@ -221,6 +230,7 @@ class SemanticPackageBuilder:
         concepts: list[dict[str, Any]] | None = None,
         *,
         states_per_package: int = 20,
+        state_alignments: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
         object_to_concept = {
@@ -231,10 +241,14 @@ class SemanticPackageBuilder:
         for rule in self.inputs.rules:
             for role in ("conditions", "antecedents", "consequents"):
                 for state in rule.get(role) or []:
-                    concept_id = object_to_concept.get(normalize_text(str(state.get("object") or "")))
-                    if not concept_id or concept_id in {"NEW", "REPARSE", "INVALID"} or concept_id not in available:
-                        continue
                     state_id = str(state.get("id") or "")
+                    concept_id = (state_alignments or {}).get(state_id) or object_to_concept.get(
+                        normalize_text(str(state.get("object") or ""))
+                    )
+                    if not concept_id or concept_id in {
+                        "NEW", "REPARSE", "INVALID", "UNRESOLVED",
+                    } or concept_id not in available:
+                        continue
                     record = grouped[concept_id].setdefault(state_id, {
                         "id": state_id,
                         "text": str(state.get("raw_state") or ""),
@@ -256,6 +270,71 @@ class SemanticPackageBuilder:
                 payload["package_id"] = stable_id("state_normalization", payload)
                 packages.append(payload)
         return packages
+
+    def state_object_alignment_packages(
+        self,
+        reparse_object_ids: set[str],
+        concepts: list[dict[str, Any]] | None = None,
+        *,
+        candidates_per_state: int = 8,
+        states_per_package: int = 15,
+    ) -> list[dict[str, Any]]:
+        available = {str(row["concept_id"]): row for row in (concepts or self.inputs.concepts)}
+        signatures = {concept_id: self._concept_signature(row) for concept_id, row in available.items()}
+        index = CharNgramIndex(signatures)
+        name_index: dict[str, list[str]] = defaultdict(list)
+        for concept_id, concept in available.items():
+            for name in [concept.get("canonical_name"), *(concept.get("aliases") or [])]:
+                if name:
+                    name_index[normalize_text(str(name))].append(concept_id)
+
+        object_id_by_key = {key: item["object_id"] for key, item in self.object_rows.items()}
+        cases: dict[str, dict[str, Any]] = {}
+        for rule in self.inputs.rules:
+            for role in ("conditions", "antecedents", "consequents"):
+                for state in rule.get(role) or []:
+                    object_name = str(state.get("object") or "")
+                    object_id = object_id_by_key.get(normalize_text(object_name))
+                    if object_id not in reparse_object_ids:
+                        continue
+                    state_id = str(state.get("id") or "")
+                    case = cases.setdefault(state_id, {
+                        "state_id": state_id,
+                        "source_object_id": object_id,
+                        "object_name": object_name,
+                        "state_text": str(state.get("raw_state") or ""),
+                        "current_normalized": str(state.get("normalized_state") or ""),
+                        "frequency": 0,
+                        "contexts": [],
+                    })
+                    case["frequency"] += 1
+                    context = self._state_context(rule, role, state_id)
+                    if context not in case["contexts"] and len(case["contexts"]) < 2:
+                        case["contexts"].append(context)
+
+        rows: list[dict[str, Any]] = []
+        for case in cases.values():
+            signature = "\n".join([
+                case["object_name"], case["state_text"], case["current_normalized"],
+                *(str(context.get("relation") or "") for context in case["contexts"]),
+                *(value for context in case["contexts"] for value in context.get("counterparts") or []),
+            ])
+            candidate_ids: list[str] = []
+            for name in (case["object_name"], case["state_text"], case["current_normalized"]):
+                for concept_id in name_index.get(normalize_text(name), []):
+                    if concept_id not in candidate_ids:
+                        candidate_ids.append(concept_id)
+            for concept_id, _score in index.query(signature, top_k=candidates_per_state * 2):
+                if concept_id not in candidate_ids:
+                    candidate_ids.append(concept_id)
+                if len(candidate_ids) >= candidates_per_state:
+                    break
+            rows.append({
+                **case,
+                "candidates": [self._concept_payload(concept_id, available) for concept_id in candidate_ids],
+            })
+        rows.sort(key=lambda row: (-int(row["frequency"]), row["state_id"]))
+        return self._chunk("state_object_alignment", rows, states_per_package, "cases")
 
     @staticmethod
     def _cluster_states(states: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
@@ -332,7 +411,7 @@ class SemanticPackageBuilder:
                 relation_names.append(str(self.concepts[child].get("canonical_name") or ""))
         return "\n".join(str(value) for value in [
             row.get("canonical_name") or "", *(row.get("aliases") or []),
-            row.get("definition") or "", *relation_names,
+            row.get("definition") or "", *(row.get("alignment_examples") or []), *relation_names,
         ] if value)
 
     def _concept_payload(
@@ -348,6 +427,7 @@ class SemanticPackageBuilder:
             "name": str(row.get("canonical_name") or ""),
             "aliases": list(row.get("aliases") or []),
             "definition": row.get("definition"),
+            "examples": list(row.get("alignment_examples") or [])[:5],
         }
         if include_evidence and not result["definition"]:
             evidence = []
