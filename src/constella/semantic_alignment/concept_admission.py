@@ -45,6 +45,33 @@ def build_initial_pending_concepts(
                 object_variants[key][raw_object] += 1
                 object_sources[key].add(str(state.get("id") or ""))
 
+    concepts_by_id = {str(row["concept_id"]): row for row in memory.concepts}
+    relation_hints: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    relation_evidence: dict[str, set[str]] = defaultdict(set)
+    for relation in inputs.relations:
+        child_id = str(relation.get("child_concept_id") or "")
+        parent_id = str(relation.get("parent_concept_id") or "")
+        relation_type = str(relation.get("type") or "")
+        if relation_type not in _RELATION_TYPES:
+            continue
+        for concept_id, other_id, direction in (
+            (child_id, parent_id, "OUTGOING"),
+            (parent_id, child_id, "INCOMING"),
+        ):
+            other = concepts_by_id.get(other_id)
+            if concept_id not in concepts_by_id or not other:
+                continue
+            evidence_ids = [str(value) for value in relation.get("evidence_ids") or []]
+            relation_evidence[concept_id].update(evidence_ids)
+            relation_hints[concept_id].append({
+                "type": relation_type,
+                "direction": direction,
+                "other_concept_id": other_id,
+                "other_canonical_name": str(other.get("canonical_name") or ""),
+                "other_definition": other.get("definition"),
+                "evidence_ids": evidence_ids,
+            })
+
     rows: list[dict[str, Any]] = []
     for concept in memory.concepts:
         if concept.get("registration_status") == "APPROVED":
@@ -59,15 +86,21 @@ def build_initial_pending_concepts(
         variants: Counter[str] = Counter()
         for term in terms:
             variants.update(object_variants[term])
+        concept_id = str(concept["concept_id"])
+        evidence_ids = list(dict.fromkeys([
+            *list(concept.get("evidence_ids") or []),
+            *sorted(relation_evidence[concept_id]),
+        ]))
+        evidence_source = {**concept, "evidence_ids": evidence_ids}
         rows.append({
-            "candidate_id": str(concept["concept_id"]),
-            "concept_id": str(concept["concept_id"]),
+            "candidate_id": concept_id,
+            "concept_id": concept_id,
             "canonical_name": str(concept.get("canonical_name") or ""),
             "aliases": list(concept.get("aliases") or []),
             "definition": concept.get("definition"),
             "definition_type": concept.get("definition_type"),
             "suggested_type": concept.get("type"),
-            "evidence_ids": list(concept.get("evidence_ids") or []),
+            "evidence_ids": evidence_ids,
             "source_package_ids": list(concept.get("source_package_ids") or []),
             "source_seed_ids": list(concept.get("source_seed_ids") or []),
             "origin_depth": int(concept.get("origin_depth") or 0),
@@ -76,7 +109,8 @@ def build_initial_pending_concepts(
             "raw_object_variants": [
                 {"text": text, "count": count} for text, count in variants.most_common(12)
             ],
-            "evidence": recall_concept_evidence(concept, inputs.units),
+            "evidence": recall_concept_evidence(evidence_source, inputs.units),
+            "catalog_relation_hints": relation_hints[concept_id],
             "lifecycle_state": LifecycleState.PENDING_CONCEPT,
             "candidate_origin": "EXTRACTED_CONCEPT",
         })
@@ -134,7 +168,7 @@ def build_pending_concepts_from_proposals(
     concepts = {str(row["concept_id"]): row for row in memory.concepts}
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     supported_kinds = {
-        ProposalKind.OBJECT_CONCEPT, ProposalKind.STATE_CONCEPT,
+        ProposalKind.OBJECT_CONCEPT,
         ProposalKind.CONCEPT_APPROVAL, ProposalKind.TYPE_REVIEW,
     }
     for proposal in proposal_rows:
@@ -142,7 +176,7 @@ def build_pending_concepts_from_proposals(
             continue
         name = str(proposal.get("canonical_name") or "").strip()
         concept_type = str(proposal.get("concept_type") or "")
-        if not name or concept_type not in {ConceptType.OBJECT, ConceptType.STATE}:
+        if not name or concept_type != ConceptType.OBJECT:
             continue
         concept_id = str(proposal.get("concept_id") or "") or stable_id(
             "concept", {"name": normalize_text(name), "type": concept_type},
@@ -303,19 +337,26 @@ class SerialConceptAdmissionRunner:
         registry: ConceptRegistry,
         memory_version: str,
     ) -> dict[str, Any]:
+        recalled = registry.identity_candidates(
+            "\n".join(str(value) for value in [
+                candidate.get("canonical_name") or "",
+                *(candidate.get("aliases") or []),
+                candidate.get("definition") or "",
+                *(row.get("text") or "" for row in candidate.get("raw_object_variants") or []),
+            ] if value),
+            top_k=10,
+        )
+        seen = {str(row["id"]) for row in recalled}
+        for hint in candidate.get("catalog_relation_hints") or []:
+            other_id = str(hint.get("other_concept_id") or "")
+            if other_id and other_id not in seen and registry.is_approved(other_id):
+                recalled.append(registry.payload(other_id, match_method="CATALOG_RELATION_HINT"))
+                seen.add(other_id)
         payload = {
             "package_type": "serial_concept_admission",
             "memory_version": memory_version,
             "candidate": candidate,
-            "registered_candidates": registry.identity_candidates(
-                "\n".join(str(value) for value in [
-                    candidate.get("canonical_name") or "",
-                    *(candidate.get("aliases") or []),
-                    candidate.get("definition") or "",
-                    *(row.get("text") or "" for row in candidate.get("raw_object_variants") or []),
-                ] if value),
-                top_k=10,
-            ),
+            "registered_candidates": recalled,
         }
         payload["package_id"] = stable_id("serial_concept_admission", payload)
         return payload
@@ -395,6 +436,8 @@ class SerialConceptAdmissionRunner:
         for relation in output.get("relations") or []:
             if relation.get("type") not in _RELATION_TYPES:
                 raise ValueError("invalid registered relation type")
+            if relation.get("direction") not in {"OUTGOING", "INCOMING"}:
+                raise ValueError("invalid registered relation direction")
             if str(relation.get("target_concept_id") or "") not in registered_ids:
                 raise ValueError("relation target must be registered and supplied")
             if not set(relation.get("evidence_ids") or []) <= allowed_evidence:
@@ -499,17 +542,23 @@ class SerialConceptAdmissionRunner:
             "source_seed_ids": list(candidate.get("source_seed_ids") or []),
             "origin_depth": int(candidate.get("origin_depth") or 0),
         }
-        relations = [{
-            "relation_id": stable_id("relation", {
-                "child": candidate["concept_id"], "type": row["type"],
-                "parent": row["target_concept_id"],
-            }),
-            "child_concept_id": candidate["concept_id"], "type": row["type"],
-            "parent_concept_id": row["target_concept_id"], "directness": "direct",
-            "evidence_ids": list(row.get("evidence_ids") or []),
-            "source_package_ids": list(candidate.get("source_package_ids") or []),
-            "audit_status": "reviewed",
-        } for row in decision.get("relations") or []]
+        relations = []
+        for row in decision.get("relations") or []:
+            if row["direction"] == "OUTGOING":
+                child_id, parent_id = candidate["concept_id"], row["target_concept_id"]
+            else:
+                child_id, parent_id = row["target_concept_id"], candidate["concept_id"]
+            relations.append({
+                "relation_id": stable_id("relation", {
+                    "child": child_id, "type": row["type"], "parent": parent_id,
+                }),
+                "child_concept_id": child_id, "type": row["type"],
+                "parent_concept_id": parent_id, "directness": "direct",
+                "evidence_ids": list(row.get("evidence_ids") or []),
+                "source_package_ids": list(candidate.get("source_package_ids") or []),
+                "audit_status": "reviewed",
+                "registration_status": "APPROVED",
+            })
         return {
             **common, "proposal_kind": ProposalKind.CONCEPT_APPROVAL,
             "type": decision["selected_type"], "concept": concept, "relations": relations,

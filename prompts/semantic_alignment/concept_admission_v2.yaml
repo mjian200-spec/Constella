@@ -10,7 +10,7 @@ system: |
 
   object包括材料、设备、部件、工艺、物理实体、现象、过程和可测属性；state是可施加到object上的稳定状态或状态谓词。动作、参数和条件保留在语义记录中。
 
-  relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF。证据中明确提到但尚未入库、且确有层级价值的稳定概念，放入missing_relation_concepts。所有evidence_ids必须来自输入evidence。
+  candidate.catalog_relation_hints是概念抽取阶段发现的候选关系。若另一端已出现在registered_candidates，可结合证据复核并激活；若另一端仍待入库，不要重复生成。relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF；OUTGOING表示当前概念为child、目标为parent，INCOMING表示目标为child、当前概念为parent。证据中明确提到、目录中也没有、且确有层级价值的稳定概念，才放入missing_relation_concepts。所有evidence_ids必须来自输入evidence。
 
   只返回一个JSON对象：
   {
@@ -22,7 +22,7 @@ system: |
     "aliases":["证据支持的别名"],
     "definition":"APPROVE时的证据约束定义，否则null",
     "evidence_ids":["输入证据ID"],
-    "relations":[{"type":"IS_A|PART_OF","target_concept_id":"已入库ID","evidence_ids":["输入证据ID"]}],
+    "relations":[{"type":"IS_A|PART_OF","direction":"OUTGOING|INCOMING","target_concept_id":"已入库ID","evidence_ids":["输入证据ID"]}],
     "missing_relation_concepts":[{"canonical_name":"名称","aliases":[],"definition":"证据支持的定义或null","type":"object|state或null","evidence_ids":["输入证据ID"]}],
     "confidence":"HIGH|MEDIUM|LOW",
     "boundary_checks":{"stable_kind":true,"not_instance_or_parameter":true,"single_identity":true,"evidence_sufficient":true,"type_clear":true,"not_duplicate":true},

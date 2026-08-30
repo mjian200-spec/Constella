@@ -77,13 +77,23 @@ def test_candidate_fusion_prioritizes_name_alias_similarity_before_context():
     registry = ConceptRegistry(MemorySnapshot.build([
         {
             "concept_id": "arc", "canonical_name": "电弧", "aliases": [], "type": "object",
-            "definition": "焊接电流形成的放电通道",
+            "definition": "焊接电流形成的放电通道", "registration_status": "APPROVED",
         },
         {
             "concept_id": "source", "canonical_name": "焊接电源", "aliases": [], "type": "object",
-            "definition": "焊接设备的供电装置",
+            "definition": "焊接设备的供电装置", "registration_status": "APPROVED",
         },
     ], []))
     candidates = registry.candidates("焊接电弧", concept_type="object", top_k=2)
     assert candidates[0]["id"] == "arc"
     assert candidates[0]["match_method"] == "CONTAINED_NAME"
+
+
+def test_unregistered_concepts_do_not_enter_object_candidate_or_coverage_indexes():
+    registry = ConceptRegistry(MemorySnapshot.build([{
+        "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+        "type": "object", "registration_status": "CANDIDATE",
+    }], []))
+
+    assert registry.candidates("电弧", concept_type="object") == []
+    assert registry.lexical_coverage("电弧", concept_type="object") == 0.0

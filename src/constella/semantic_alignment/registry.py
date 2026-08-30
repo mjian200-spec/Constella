@@ -89,6 +89,8 @@ class MemorySnapshot:
             value.setdefault("registration_status", "CANDIDATE")
             by_id[str(value["concept_id"])] = value
         relation_rows = [deepcopy(row) for row in relations]
+        for relation in relation_rows:
+            relation.setdefault("registration_status", "CANDIDATE")
         approved_count = 0
         for event in reviewed_memory or []:
             if str(event.get("status") or "").upper() != "APPROVED":
@@ -201,6 +203,8 @@ class ConceptRegistry:
         self.parents: dict[str, list[str]] = defaultdict(list)
         neighbors: dict[str, list[str]] = defaultdict(list)
         for relation in snapshot.relations:
+            if relation.get("registration_status") != "APPROVED":
+                continue
             child = str(relation.get("child_concept_id") or "")
             parent = str(relation.get("parent_concept_id") or "")
             if relation.get("type") == "IS_A":
@@ -229,12 +233,20 @@ class ConceptRegistry:
         for key, values in self.exact_index.items():
             for concept_id, _method in values:
                 concept_type = str(self.concepts[concept_id].get("type") or "")
-                if concept_type in {ConceptType.OBJECT, ConceptType.STATE}:
+                if (
+                    concept_type in {ConceptType.OBJECT, ConceptType.STATE}
+                    and self.is_approved(concept_id)
+                ):
                     self.lexical_terms[concept_type].append((key, concept_id))
         for concept_type in self.lexical_terms:
             self.lexical_terms[concept_type].sort(key=lambda item: (-len(item[0]), item[0], item[1]))
         self.candidate_terms = sorted(
-            ((term, concept_id) for term, rows in self.exact_index.items() for concept_id, _method in rows),
+            (
+                (term, concept_id)
+                for term, rows in self.exact_index.items()
+                for concept_id, _method in rows
+                if self.is_approved(concept_id)
+            ),
             key=lambda item: (-len(item[0]), item[0], item[1]),
         )
 
@@ -310,7 +322,10 @@ class ConceptRegistry:
         }
 
     def candidates(self, text: str, *, concept_type: str, top_k: int = 6) -> list[dict[str, Any]]:
-        result = self.exact(text, concept_type=concept_type)
+        result = [
+            row for row in self.exact(text, concept_type=concept_type)
+            if row.get("registration_status") == "APPROVED"
+        ]
         seen = {row["id"] for row in result}
         remaining = max(0, top_k - len(result))
         if not remaining:
@@ -374,6 +389,8 @@ class ConceptRegistry:
                 break
             if term not in normalized or concept_id in seen:
                 continue
+            if not self.is_approved(concept_id):
+                continue
             row_type = str(self.concepts[concept_id].get("type") or "")
             if row_type and row_type != concept_type:
                 continue
@@ -396,6 +413,8 @@ class ConceptRegistry:
             if added >= limit or len(result) >= limit and match_method == "FUZZY_CONTEXT":
                 break
             if concept_id in seen:
+                continue
+            if not self.is_approved(concept_id):
                 continue
             row_type = str(self.concepts[concept_id].get("type") or "")
             if row_type and row_type != concept_type:

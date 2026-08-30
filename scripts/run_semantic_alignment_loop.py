@@ -63,6 +63,34 @@ def _write_concept_input(
     write_jsonl(directory / "concept_relations.jsonl", relations)
 
 
+def _registered_library(
+    memory: MemorySnapshot,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    concepts = [
+        row for row in memory.concepts
+        if row.get("registration_status") == "APPROVED"
+    ]
+    concept_ids = {str(row["concept_id"]) for row in concepts}
+    relations = [
+        row for row in memory.relations
+        if row.get("registration_status") == "APPROVED"
+        and str(row.get("child_concept_id") or "") in concept_ids
+        and str(row.get("parent_concept_id") or "") in concept_ids
+    ]
+    candidates = [
+        row for row in memory.concepts
+        if row.get("registration_status") != "APPROVED"
+    ]
+    return concepts, relations, candidates
+
+
+def _write_library_snapshot(directory: Path, memory: MemorySnapshot) -> None:
+    concepts, relations, candidates = _registered_library(memory)
+    write_jsonl(directory / "registered_concepts.jsonl", concepts)
+    write_jsonl(directory / "registered_relations.jsonl", relations)
+    write_jsonl(directory / "remaining_candidate_catalog.jsonl", candidates)
+
+
 def _alignment_suffix(object_limit: int | None) -> str:
     return f"_trial_limit_{object_limit}" if object_limit is not None else ""
 
@@ -134,6 +162,50 @@ def _summary(
         "final_invariants": assembly.get("invariants") or {},
         "cycles": cycles,
     }
+
+
+def _review_markdown(report: dict[str, Any]) -> str:
+    audit = report["final_library_audit"]
+    lines = [
+        "# 概念生命周期最终审核总结",
+        "",
+        f"- 停止原因：`{report['stop_reason']}`",
+        f"- 完成轮数：{report['cycle_count']}",
+        f"- 最终记忆版本：`{report['final_memory_version']}`",
+        f"- 已入库概念：{audit['registered_concept_count']}",
+        f"- 剩余候选概念：{audit['candidate_concept_count']}",
+        f"- 已批准关系：{sum(audit['relation_counts'].values())}",
+        f"- 有正式关系的概念：{audit['registered_concepts_with_relations']}",
+        f"- 孤立已入库概念：{audit['isolated_registered_concept_count']}",
+        "",
+        "## 正式库不变量",
+        "",
+    ]
+    for name, passed in audit["invariants"].items():
+        lines.append(f"- {'通过' if passed else '失败'}：`{name}`")
+    lines.extend([
+        "",
+        "## 最终对象状态",
+        "",
+    ])
+    for status, count in sorted(report["final_object_status_counts"].items()):
+        lines.append(f"- `{status}`：{count}")
+    lines.extend([
+        "",
+        "## 每轮变化",
+        "",
+        "| 轮次 | 新记忆事件 | 批准 | 合并 | 延后 | 拒绝 | 下一轮候选 |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for row in report["cycles"]:
+        admission = row.get("admission") or {}
+        lines.append(
+            f"| {row['cycle']} | {row.get('new_memory_event_count', 0)} | "
+            f"{admission.get('approved_count', 0)} | {admission.get('merged_count', 0)} | "
+            f"{admission.get('deferred_count', 0)} | {admission.get('rejected_count', 0)} | "
+            f"{row.get('next_pending_concept_count', 0)} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:
@@ -227,6 +299,7 @@ def main() -> int:
         memory = MemorySnapshot.build(catalog, inputs.relations, events)
         library_audit = audit_concept_library(memory)
         write_json(cycle_dir / "concept_library_audit.json", library_audit)
+        _write_library_snapshot(cycle_dir, memory)
         if not all(library_audit["invariants"].values()):
             stop_reason = "CONCEPT_LIBRARY_INVARIANT_FAILED"
             cycles.append({
@@ -270,7 +343,11 @@ def main() -> int:
     final_report = _summary(
         cycles=cycles, events=events, memory=final_memory, stop_reason=stop_reason,
     )
+    _write_library_snapshot(output / "final_library", final_memory)
     write_json(output / "lifecycle_report.json", final_report)
+    (output / "final_review_summary.md").write_text(
+        _review_markdown(final_report), encoding="utf-8",
+    )
     print(json.dumps(final_report, ensure_ascii=False, indent=2))
     return 0 if stop_reason != "CONCEPT_LIBRARY_INVARIANT_FAILED" else 2
 

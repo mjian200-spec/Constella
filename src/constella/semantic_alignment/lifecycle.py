@@ -124,6 +124,9 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
         child = str(relation.get("child_concept_id") or "")
         parent = str(relation.get("parent_concept_id") or "")
         relation_type = str(relation.get("type") or "")
+        if relation.get("registration_status") != "APPROVED":
+            deferred_candidate_relations += 1
+            continue
         if child not in catalog_ids or parent not in catalog_ids:
             missing_endpoints.append({
                 "relation_id": relation.get("relation_id"),
@@ -133,7 +136,12 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
             })
             continue
         if child not in registered_ids or parent not in registered_ids:
-            deferred_candidate_relations += 1
+            missing_endpoints.append({
+                "relation_id": relation.get("relation_id"),
+                "child_concept_id": child,
+                "parent_concept_id": parent,
+                "type": relation_type,
+            })
             continue
         relation_counts[relation_type] += 1
         related_ids.update((child, parent))

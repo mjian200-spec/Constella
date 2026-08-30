@@ -61,9 +61,9 @@ def test_library_audit_reports_term_collisions_missing_endpoints_and_cycles():
             "type": "object", "registration_status": "APPROVED",
         },
     ], [
-        {"relation_id": "r1", "child_concept_id": "a", "parent_concept_id": "b", "type": "IS_A"},
-        {"relation_id": "r2", "child_concept_id": "b", "parent_concept_id": "a", "type": "IS_A"},
-        {"relation_id": "r3", "child_concept_id": "a", "parent_concept_id": "missing", "type": "PART_OF"},
+        {"relation_id": "r1", "child_concept_id": "a", "parent_concept_id": "b", "type": "IS_A", "registration_status": "APPROVED"},
+        {"relation_id": "r2", "child_concept_id": "b", "parent_concept_id": "a", "type": "IS_A", "registration_status": "APPROVED"},
+        {"relation_id": "r3", "child_concept_id": "a", "parent_concept_id": "missing", "type": "PART_OF", "registration_status": "APPROVED"},
     ])
 
     report = audit_concept_library(memory)

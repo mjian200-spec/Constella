@@ -57,13 +57,33 @@ class _SerialFakeClient:
         }
 
 
+class _HierarchyFakeClient:
+    def complete(self, _model_key, messages, **_kwargs):
+        package = json.loads(messages[1]["content"])
+        candidate = package["candidate"]
+        output = _decision(candidate)
+        if candidate["concept_id"] == "parent":
+            child = next(row for row in package["registered_candidates"] if row["id"] == "child")
+            output["relations"] = [{
+                "type": "IS_A", "direction": "INCOMING",
+                "target_concept_id": child["id"], "evidence_ids": ["u1"],
+            }]
+        return {
+            "model": "fake-model",
+            "choices": [{"message": {"content": json.dumps(output, ensure_ascii=False)}}],
+        }
+
+
 def test_initial_candidates_include_zero_occurrence_extracted_concepts():
     inputs = AlignmentInputs(
         concepts=[
             {"concept_id": "arc", "canonical_name": "电弧", "aliases": [], "evidence_ids": ["u1"]},
             {"concept_id": "rare", "canonical_name": "稀有概念", "aliases": [], "evidence_ids": ["u2"]},
         ],
-        relations=[],
+        relations=[{
+            "relation_id": "r1", "child_concept_id": "arc", "parent_concept_id": "rare",
+            "type": "IS_A", "evidence_ids": ["u3"],
+        }],
         rules=[{
             "id": "r1", "conditions": [],
             "antecedents": [{"id": "s1", "object": "电弧"}], "consequents": [],
@@ -72,14 +92,19 @@ def test_initial_candidates_include_zero_occurrence_extracted_concepts():
         units={
             "u1": {"id": "u1", "type": "text", "content": "电弧是一种气体放电。"},
             "u2": {"id": "u2", "type": "text", "content": "这里定义稀有概念。"},
+            "u3": {"id": "u3", "type": "text", "content": "电弧属于稀有概念。"},
         },
     )
 
-    rows = build_initial_pending_concepts(inputs, MemorySnapshot.build(inputs.concepts, []))
+    rows = build_initial_pending_concepts(
+        inputs, MemorySnapshot.build(inputs.concepts, inputs.relations),
+    )
 
     assert [row["concept_id"] for row in rows] == ["arc", "rare"]
     assert [row["occurrence_count"] for row in rows] == [1, 0]
     assert rows[1]["evidence"][0]["evidence_id"] == "u2"
+    assert rows[0]["catalog_relation_hints"][0]["direction"] == "OUTGOING"
+    assert rows[1]["catalog_relation_hints"][0]["direction"] == "INCOMING"
 
 
 def test_book_recall_prefers_explicit_evidence_before_other_name_hits():
@@ -121,6 +146,19 @@ def test_alignment_proposals_become_ranked_evidence_bound_candidates():
     assert rows[0]["evidence"][0]["text"] == "脉冲持续时间决定热输入。"
 
 
+def test_state_and_action_proposals_do_not_enter_object_concept_admission():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[], context_packages={}, units={},
+    )
+
+    rows = build_pending_concepts_from_proposals([{
+        "proposal_kind": "STATE_CONCEPT", "concept_type": "state",
+        "canonical_name": "升高", "support": 100,
+    }], inputs, MemorySnapshot.build([], []))
+
+    assert rows == []
+
+
 def test_serial_admission_second_candidate_sees_first_and_merges(tmp_path):
     concepts = [
         {
@@ -158,3 +196,41 @@ def test_serial_admission_second_candidate_sees_first_and_merges(tmp_path):
     assert len(final.concepts) == 1
     assert final.concepts[0]["concept_id"] == "arc"
     assert "弧光" in final.concepts[0]["aliases"]
+
+
+def test_serial_admission_activates_relation_when_other_endpoint_is_registered(tmp_path):
+    concepts = [
+        {"concept_id": "child", "canonical_name": "电弧", "aliases": [], "definition": "放电现象", "evidence_ids": ["u1"]},
+        {"concept_id": "parent", "canonical_name": "气体放电", "aliases": [], "definition": "气体中的放电", "evidence_ids": ["u1"]},
+    ]
+    hints = {
+        "child": [{"type": "IS_A", "direction": "OUTGOING", "other_concept_id": "parent", "evidence_ids": ["u1"]}],
+        "parent": [{"type": "IS_A", "direction": "INCOMING", "other_concept_id": "child", "evidence_ids": ["u1"]}],
+    }
+    candidates = [{
+        **row, "candidate_id": row["concept_id"], "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "电弧是一种气体放电。"}],
+        "catalog_relation_hints": hints[row["concept_id"]],
+    } for row in concepts]
+    relations = [{
+        "relation_id": "candidate_r1", "child_concept_id": "child",
+        "parent_concept_id": "parent", "type": "IS_A",
+    }]
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_HierarchyFakeClient(),
+    )
+
+    _reviews, events, report = runner.run(
+        candidates, concepts=concepts, relations=relations,
+    )
+
+    final = MemorySnapshot.build(concepts, relations, events)
+    approved_relations = [
+        row for row in final.relations if row.get("registration_status") == "APPROVED"
+    ]
+    assert len(approved_relations) == 1
+    assert approved_relations[0]["child_concept_id"] == "child"
+    assert approved_relations[0]["parent_concept_id"] == "parent"
+    assert report["library_audit"]["relation_counts"] == {"IS_A": 1}

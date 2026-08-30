@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 from constella.semantic_alignment import AlignmentInputs, MemorySnapshot, SemanticPackageBuilder
 from constella.semantic_alignment.models import PackageTier
 from constella.semantic_alignment.packages import CharNgramIndex
@@ -61,6 +63,25 @@ def test_packages_are_tier_homogeneous_stable_and_size_bounded():
     assert all(len({case["tier"] for case in package["cases"]}) == 1 for package in first)
     assert all(package["tier"] in {PackageTier.H1, PackageTier.H2, PackageTier.H3} for package in first)
     assert builder.package_report(first)["max_package_chars"] < 6_000
+
+
+def test_unprocessed_objects_are_banded_by_rank_one_five_twenty_five():
+    rules = [{
+        "id": f"r{index}", "context_package_id": f"p{index}",
+        "conditions": [],
+        "antecedents": [{
+            "id": f"s{index}", "object": f"对象{index:02d}", "raw_state": "稳定",
+        }],
+        "consequents": [],
+    } for index in range(31)]
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=rules, context_packages={}, units={},
+    )
+    builder = SemanticPackageBuilder(inputs, memory=MemorySnapshot.build([], []))
+
+    counts = Counter(str(row["tier"]) for row in builder.scored_cases)
+
+    assert counts == {PackageTier.H1: 1, PackageTier.H2: 5, PackageTier.H3: 25}
 
 
 def test_source_states_preserve_object_context_and_frequency():

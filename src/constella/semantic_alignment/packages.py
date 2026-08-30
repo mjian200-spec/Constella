@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .lifecycle import RankConfidence, rank_by_occurrence
 from .models import AlignmentStatus, ConceptType, PackageTier, TIER_ORDER
 from .registry import CharNgramIndex, ConceptRegistry, MemorySnapshot, normalize_text, stable_id
 
@@ -131,6 +132,9 @@ class SemanticPackageBuilder:
                 "state_examples": source["state_examples"],
                 "contexts": source["contexts"],
                 "confidence": source["confidence"],
+                "rank_confidence": source["rank_confidence"],
+                "occurrence_rank": source["occurrence_rank"],
+                "rank_population": source.get("rank_population"),
                 "lexical_coverage": source["lexical_coverage"],
                 "structure_signal_count": source["structure_signal_count"],
                 "exact_resolution": source["exact_resolution"],
@@ -202,14 +206,13 @@ class SemanticPackageBuilder:
         }
 
     def _score_objects(self) -> list[dict[str, Any]]:
-        scored: list[dict[str, Any]] = []
+        mechanical: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
         for object_id, item in self.object_rows.items():
             exact = self.registry.resolve_exact(item["name"], concept_type=ConceptType.OBJECT)
             signals = sum(bool(pattern.search(item["name"])) for pattern in _STRUCTURE_PATTERNS)
             coverage = self.registry.lexical_coverage(item["name"], concept_type=ConceptType.OBJECT)
             if exact["status"] == AlignmentStatus.MATCHED and signals == 0:
-                tier = PackageTier.H0
-                confidence = 1.0
                 self.mechanical_interpretations[object_id] = {
                     "object_id": object_id,
                     "decision": "ATOMIC",
@@ -223,43 +226,40 @@ class SemanticPackageBuilder:
                     "interpretation_method": "typed_exact",
                     "tier": PackageTier.H0,
                 }
-            elif exact["status"] == AlignmentStatus.TYPE_REVIEW and signals == 0:
-                tier = PackageTier.H1
-                confidence = 0.82
-                self.mechanical_interpretations[object_id] = {
-                    "object_id": object_id,
-                    "decision": "ATOMIC",
-                    "core_objects": [{
-                        "text": item["name"],
-                        "concept_id": exact["concept_id"],
-                        "match_method": exact["match_method"],
-                    }],
-                    "embedded_states": [],
-                    "qualifiers": [],
-                    "interpretation_method": "untyped_exact",
-                    "tier": PackageTier.H1,
-                }
-            elif exact["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW} and signals <= 1:
-                tier = PackageTier.H1
-                confidence = 0.9 if exact["status"] == AlignmentStatus.MATCHED else 0.78
-            elif coverage >= 0.65 and signals <= 1:
-                tier = PackageTier.H1
-                confidence = round(0.65 + coverage * 0.25, 4)
-            elif exact["status"] == AlignmentStatus.AMBIGUOUS or coverage >= 0.3 or signals <= 1:
-                tier = PackageTier.H2
-                confidence = round(0.35 + min(coverage, 0.6) * 0.35 - signals * 0.03, 4)
+                mechanical.append({
+                    **item,
+                    "tier": PackageTier.H0,
+                    "confidence": 1.0,
+                    "rank_confidence": RankConfidence.HIGH,
+                    "occurrence_rank": 0,
+                    "lexical_coverage": coverage,
+                    "structure_signal_count": signals,
+                    "exact_resolution": exact,
+                })
             else:
-                tier = PackageTier.H3
-                confidence = round(max(0.05, 0.25 + coverage * 0.25 - signals * 0.04), 4)
-            scored.append({
-                **item,
-                "tier": tier,
-                "confidence": confidence,
-                "lexical_coverage": coverage,
-                "structure_signal_count": signals,
-                "exact_resolution": exact,
-            })
-        return sorted(scored, key=lambda row: (
+                unresolved.append({
+                    **item,
+                    "candidate_id": object_id,
+                    "occurrence_count": int(item["frequency"]),
+                    "lexical_coverage": coverage,
+                    "structure_signal_count": signals,
+                    "exact_resolution": exact,
+                })
+
+        ranked = rank_by_occurrence(
+            unresolved, count_field="occurrence_count", identity_field="candidate_id",
+        )
+        tier_by_confidence = {
+            RankConfidence.HIGH: PackageTier.H1,
+            RankConfidence.MEDIUM: PackageTier.H2,
+            RankConfidence.LOW: PackageTier.H3,
+        }
+        for row in ranked:
+            row["tier"] = tier_by_confidence[row["rank_confidence"]]
+            row["confidence"] = round(
+                1 - (int(row["occurrence_rank"]) - 1) / len(ranked), 4,
+            )
+        return sorted([*mechanical, *ranked], key=lambda row: (
             TIER_ORDER[PackageTier(row["tier"])], -float(row["confidence"]),
             -int(row["frequency"]), row["object_id"],
         ))
