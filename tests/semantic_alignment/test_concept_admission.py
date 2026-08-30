@@ -94,6 +94,19 @@ class _GeneratedConceptFakeClient:
         }
 
 
+class _RecoveringFakeClient:
+    def __init__(self):
+        self.valid = False
+
+    def complete(self, _model_key, messages, **_kwargs):
+        package = json.loads(messages[1]["content"])
+        content = (
+            json.dumps(_decision(package["candidate"]), ensure_ascii=False)
+            if self.valid else '{"decision":"BROKEN"}'
+        )
+        return {"model": "fake-model", "choices": [{"message": {"content": content}}]}
+
+
 def test_initial_candidates_include_zero_occurrence_extracted_concepts():
     inputs = AlignmentInputs(
         concepts=[
@@ -286,3 +299,27 @@ def test_generated_generic_relation_name_is_context_completed_and_checkpoint_res
     assert resumed_events == events
     assert resumed_report == report
     assert client.calls == first_call_count
+
+
+def test_failed_checkpoint_candidate_is_requeued_on_resume(tmp_path):
+    concept = {
+        "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+        "definition": "气体放电现象。", "evidence_ids": ["u1"],
+    }
+    candidate = {
+        **concept, "candidate_id": "arc", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "电弧是气体放电现象。"}],
+    }
+    client = _RecoveringFakeClient()
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path, client=client,
+    )
+    reviews, _events, report = runner.run([candidate], concepts=[concept], relations=[])
+    assert reviews[0]["decision"] == "FAILED"
+    assert report["failed_count"] == 1
+
+    client.valid = True
+    reviews, _events, report = runner.run([candidate], concepts=[concept], relations=[])
+    assert reviews[0]["decision"] == "APPROVE"
+    assert report["failed_count"] == 0

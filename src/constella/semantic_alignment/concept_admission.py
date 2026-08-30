@@ -292,6 +292,19 @@ class SerialConceptAdmissionRunner:
             processed_ids = set(saved["processed_ids"])
             reviews = list(saved["reviews"])
             generated_count = int(saved["generated_count"])
+            failed_ids = {
+                str(row["concept_id"]) for row in reviews if row.get("decision") == "FAILED"
+            }
+            retry_by_id = {
+                str(row["concept_id"]): row
+                for row in [*selected_candidates, *(saved.get("failed_candidates") or [])]
+            }
+            retry_candidates = [retry_by_id[value] for value in failed_ids if value in retry_by_id]
+            if retry_candidates:
+                queue.extendleft(reversed(retry_candidates))
+                processed_ids.difference_update(failed_ids)
+                reviews = [row for row in reviews if row.get("decision") != "FAILED"]
+            failed_candidates: list[dict[str, Any]] = []
         else:
             events = list(base_events)
             concept_rows = [dict(row) for row in concepts]
@@ -299,6 +312,7 @@ class SerialConceptAdmissionRunner:
             processed_ids = set()
             reviews = []
             generated_count = 0
+            failed_candidates = []
         queued_names = {
             normalize_text(str(row.get("canonical_name") or ""))
             for row in concept_rows
@@ -320,6 +334,8 @@ class SerialConceptAdmissionRunner:
                 result = self._process(package)
             review, event, generated = self._review(package, result, registry)
             reviews.append(review)
+            if review["decision"] == "FAILED":
+                failed_candidates.append(candidate)
             processed_ids.add(candidate_id)
             if event is not None:
                 events.append(event)
@@ -350,6 +366,7 @@ class SerialConceptAdmissionRunner:
                 "processed_ids": sorted(processed_ids),
                 "reviews": reviews,
                 "generated_count": generated_count,
+                "failed_candidates": failed_candidates,
             })
 
         final_memory = MemorySnapshot.build(concept_rows, relations, events)
@@ -420,7 +437,7 @@ class SerialConceptAdmissionRunner:
             {"role": "user", "content": json.dumps(package, ensure_ascii=False)},
         ]
         errors: list[str] = []
-        for attempt in range(1, 3):
+        for attempt in range(1, 4):
             content: str | None = None
             try:
                 response = self.client.complete(
@@ -444,7 +461,7 @@ class SerialConceptAdmissionRunner:
                 return result
             except Exception as error:
                 errors.append(f"{type(error).__name__}: {error}")
-                if attempt == 1:
+                if attempt < 3:
                     if content is not None:
                         messages.append({"role": "assistant", "content": content})
                     messages.append({
@@ -452,7 +469,7 @@ class SerialConceptAdmissionRunner:
                         "content": f"输出不符合协议：{error}。只返回修正后的JSON。",
                     })
         result = {
-            "package_id": package["package_id"], "status": "failed", "attempt_count": 2,
+            "package_id": package["package_id"], "status": "failed", "attempt_count": 3,
             "input_fingerprint": self._fingerprint(package), "errors": errors,
         }
         self._store(package, result)
