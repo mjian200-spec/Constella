@@ -14,6 +14,7 @@ import yaml
 from constella.context_builder.llm_client import LLMClient
 
 from .models import ConceptType, ProposalKind
+from .lifecycle import LifecycleState, rank_by_occurrence
 from .registry import MemorySnapshot, stable_id
 
 
@@ -32,9 +33,14 @@ def build_concept_admission_candidates(
     proposal_rows: list[dict[str, Any]],
     memory: MemorySnapshot,
     *,
-    min_support: int = 5,
+    min_support: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Collapse dimension-level proposals into one auditable row per concept."""
+    """Collapse proposals and rank every eligible concept by occurrence.
+
+    ``min_support`` remains accepted for CLI compatibility but is deliberately
+    not used as a threshold. Promotion priority is determined by the complete
+    occurrence ranking and the 1:5:25 bands.
+    """
     grouped: dict[str, dict[str, Any]] = {}
     concepts = {str(row["concept_id"]): row for row in memory.concepts}
     for proposal in proposal_rows:
@@ -90,7 +96,6 @@ def build_concept_admission_candidates(
             "has_article_evidence": bool(
                 row["concept_evidence_ids"] or row["concept_source_package_ids"]
             ),
-            "minimum_support": maximum_support >= min_support,
             "not_numeric_expression": not bool(_NUMERIC_EXPRESSION.fullmatch(name)),
         }
         if not all(deterministic_checks.values()):
@@ -115,10 +120,11 @@ def build_concept_admission_candidates(
             "source_state_ids": sorted(row["source_state_ids"])[:20],
             "context_package_ids": sorted(row["context_package_ids"])[:20],
             "deterministic_checks": deterministic_checks,
+            "occurrence_count": maximum_support,
+            "candidate_id": row["concept_id"],
+            "lifecycle_state": LifecycleState.PENDING_CONCEPT,
         })
-    return sorted(result, key=lambda row: (
-        -int(row["unlock_count"]), -max(row["support_by_type"].values()), row["concept_id"],
-    ))
+    return rank_by_occurrence(result, identity_field="candidate_id")
 
 
 class ConceptAdmissionGate:

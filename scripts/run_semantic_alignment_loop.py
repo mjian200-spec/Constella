@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import subprocess
@@ -13,234 +14,265 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from constella.semantic_alignment import MemorySnapshot, load_alignment_inputs  # noqa: E402
-from constella.semantic_alignment.assembly import write_json, write_jsonl  # noqa: E402
-from constella.semantic_alignment.auto_promotion import (  # noqa: E402
-    ConceptAdmissionGate,
-    build_concept_admission_candidates,
+from constella.semantic_alignment import (  # noqa: E402
+    MemorySnapshot,
+    SerialConceptAdmissionRunner,
+    audit_concept_library,
+    build_initial_pending_concepts,
+    build_pending_concepts_from_proposals,
+    load_alignment_inputs,
 )
+from constella.semantic_alignment.assembly import write_json, write_jsonl  # noqa: E402
 from constella.semantic_alignment.evaluation import read_jsonl  # noqa: E402
 
 
-def _report_summary(report: dict[str, Any]) -> dict[str, Any]:
-    assembly = report.get("assembly") or {}
-    evaluation = report.get("evaluation") or {}
-    runner = report.get("runner") or {}
-    return {
-        "memory_version": report.get("memory_version"),
-        "approved_memory_count": report.get("approved_memory_count"),
-        "candidate_catalog_count": report.get("candidate_catalog_count"),
-        "registered_concept_count": report.get("registered_concept_count"),
-        "mechanical_object_count": report.get("mechanical_object_count"),
-        "llm_package_count": report.get("llm_package_count"),
-        "llm_case_count": report.get("llm_case_count"),
-        "runner_success_count": runner.get("success_count"),
-        "runner_failed_count": runner.get("failed_count"),
-        "object_status_counts": assembly.get("object_status_counts") or {},
-        "state_status_counts": assembly.get("state_status_counts") or {},
-        "proposal_count": assembly.get("proposal_count"),
-        "coverage_object_count": assembly.get("coverage_object_count"),
-        "coverage_observation_count": evaluation.get("coverage_observation_count"),
-        "invariants": assembly.get("invariants") or {},
-    }
+def _distribution(rows: list[dict[str, Any]], field: str) -> dict[str, int]:
+    return dict(sorted(Counter(str(row.get(field) or "UNKNOWN") for row in rows).items()))
 
 
-def _proposals_path(directory: Path) -> Path:
-    exact = directory / "alignment_proposals.jsonl"
-    if exact.is_file():
-        return exact
-    suffixed = sorted(directory.glob("alignment_proposals*.jsonl"))
-    if not suffixed:
-        raise FileNotFoundError(f"missing alignment_proposals*.jsonl in {directory}")
-    return suffixed[0]
-
-
-def _delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for field in (
-        "approved_memory_count", "candidate_catalog_count", "registered_concept_count",
-        "mechanical_object_count", "llm_package_count",
-        "llm_case_count", "proposal_count", "coverage_object_count", "coverage_observation_count",
-    ):
-        left, right = before.get(field), after.get(field)
-        if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-            result[field] = right - left
-    for field in ("object_status_counts", "state_status_counts"):
-        keys = set(before.get(field) or {}) | set(after.get(field) or {})
-        result[field] = {
-            key: int((after.get(field) or {}).get(key, 0))
-            - int((before.get(field) or {}).get(key, 0))
-            for key in sorted(keys)
+def _catalog_with_candidates(
+    catalog: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_id = {str(row["concept_id"]): dict(row) for row in catalog}
+    for row in candidates:
+        concept_id = str(row["concept_id"])
+        if concept_id in by_id:
+            continue
+        by_id[concept_id] = {
+            "concept_id": concept_id,
+            "canonical_name": row["canonical_name"],
+            "aliases": list(row.get("aliases") or []),
+            "definition": row.get("definition"),
+            "definition_type": row.get("definition_type"),
+            "evidence_ids": list(row.get("evidence_ids") or []),
+            "source_package_ids": list(row.get("source_package_ids") or []),
+            "source_seed_ids": list(row.get("source_seed_ids") or []),
+            "origin_depth": int(row.get("origin_depth") or 0),
+            "registration_status": "CANDIDATE",
         }
-    return result
+    return sorted(by_id.values(), key=lambda row: str(row["concept_id"]))
+
+
+def _write_concept_input(
+    directory: Path,
+    catalog: list[dict[str, Any]],
+    relations: list[dict[str, Any]],
+) -> None:
+    write_jsonl(directory / "concepts.jsonl", catalog)
+    write_jsonl(directory / "concept_relations.jsonl", relations)
+
+
+def _alignment_suffix(object_limit: int | None) -> str:
+    return f"_trial_limit_{object_limit}" if object_limit is not None else ""
+
+
+def _run_alignment(
+    args: argparse.Namespace,
+    *,
+    concept_dir: Path,
+    reviewed_memory: Path,
+    output_dir: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    command = [
+        sys.executable, str(ROOT / "scripts" / "align_semantics.py"),
+        "--rule-output-dir", args.rule_output_dir,
+        "--concept-output-dir", str(concept_dir),
+        "--context-output-dir", args.context_output_dir,
+        "--output-dir", str(output_dir),
+        "--reviewed-memory", str(reviewed_memory),
+        "--config-dir", args.config_dir,
+        "--model-key", args.model_key,
+        "--max-tier", "H3",
+        "--proposal-threshold", str(args.proposal_threshold),
+        "--candidates-per-object", str(args.candidates_per_object),
+        "--objects-per-package", str(args.objects_per_package),
+        "--max-package-chars", str(args.max_package_chars),
+    ]
+    if args.workers is not None:
+        command.extend(["--workers", str(args.workers)])
+    if args.object_limit is not None:
+        command.extend(["--object-limit", str(args.object_limit)])
+    if args.refresh_alignments:
+        command.append("--refresh")
+    completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "process_stdout.log").write_text(completed.stdout, encoding="utf-8")
+    (output_dir / "process_stderr.log").write_text(completed.stderr, encoding="utf-8")
+    if completed.returncode:
+        raise RuntimeError(
+            f"semantic alignment failed with {completed.returncode}; "
+            f"see {output_dir / 'process_stderr.log'}"
+        )
+    suffix = _alignment_suffix(args.object_limit)
+    report_path = output_dir / f"alignment_report{suffix}.json"
+    proposals_path = output_dir / f"alignment_proposals{suffix}.jsonl"
+    return json.loads(report_path.read_text(encoding="utf-8")), read_jsonl(proposals_path)
+
+
+def _summary(
+    *,
+    cycles: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    memory: MemorySnapshot,
+    stop_reason: str,
+) -> dict[str, Any]:
+    last_alignment = next(
+        (row["alignment"] for row in reversed(cycles) if row.get("alignment")),
+        {},
+    )
+    assembly = last_alignment.get("assembly") or {}
+    return {
+        "schema_version": "semantic_alignment.lifecycle.v1",
+        "stop_reason": stop_reason,
+        "cycle_count": len(cycles),
+        "reviewed_memory_event_count": len(events),
+        "final_memory_version": memory.version,
+        "final_library_audit": audit_concept_library(memory),
+        "final_object_status_counts": assembly.get("object_status_counts") or {},
+        "final_state_status_counts": assembly.get("state_status_counts") or {},
+        "final_invariants": assembly.get("invariants") or {},
+        "cycles": cycles,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Automatically promote evidence-backed concept types and rerun alignment epochs.",
+        description=(
+            "Run serial concept admission and parallel object alignment until the "
+            "concept/object lifecycle converges."
+        ),
     )
-    parser.add_argument(
-        "--seed-artifact-dir", default="outputs/semantic_alignment_content_v2_full_20260830",
-        help="Existing full alignment used as epoch 0.",
-    )
-    parser.add_argument("--output-dir", default="outputs/semantic_alignment_auto_loop_20260831")
+    parser.add_argument("--output-dir", default="outputs/semantic_alignment_lifecycle")
     parser.add_argument("--rule-output-dir", default="outputs/rule_extraction_full_20260829")
     parser.add_argument("--concept-output-dir", default="outputs/article_concepts_full_20260829")
-    parser.add_argument("--context-output-dir", default="outputs/context_builder_semantic_qwen38_27b_20260829")
+    parser.add_argument(
+        "--context-output-dir", default="outputs/context_builder_semantic_qwen38_27b_20260829",
+    )
     parser.add_argument("--initial-reviewed-memory")
     parser.add_argument("--config-dir", default=str(ROOT / "configs" / "concept_layer"))
     parser.add_argument("--model-key", default="qwen3_8_27b")
-    parser.add_argument("--max-epochs", type=int, default=2)
-    parser.add_argument("--min-support", type=int, default=5)
-    parser.add_argument("--review-batch-size", type=int, default=12)
-    parser.add_argument("--workers", type=int)
-    parser.add_argument("--proposal-threshold", type=int, default=5)
-    parser.add_argument("--candidates-per-object", type=int, default=6)
-    parser.add_argument("--objects-per-package", type=int, default=16)
+    parser.add_argument("--max-cycles", type=int, default=6)
+    parser.add_argument("--admission-limit", type=int, help="Smoke-test only: limit each admission pass.")
+    parser.add_argument("--object-limit", type=int, help="Smoke-test only: limit LLM object packages.")
+    parser.add_argument("--proposal-threshold", type=int, default=1)
+    parser.add_argument("--candidates-per-object", type=int, default=8)
+    parser.add_argument("--objects-per-package", type=int, default=12)
     parser.add_argument("--max-package-chars", type=int, default=40_000)
-    parser.add_argument("--refresh-reviews", action="store_true")
+    parser.add_argument("--workers", type=int)
+    parser.add_argument("--refresh-admissions", action="store_true")
     parser.add_argument("--refresh-alignments", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if args.max_epochs < 1 or args.min_support < 1:
-        parser.error("--max-epochs and --min-support must be positive")
+    if args.max_cycles < 1:
+        parser.error("--max-cycles must be positive")
+    if args.admission_limit is not None and args.admission_limit < 1:
+        parser.error("--admission-limit must be positive")
+    if args.object_limit is not None and args.object_limit < 1:
+        parser.error("--object-limit must be positive")
 
-    seed = Path(args.seed_artifact_dir)
-    if not (seed / "alignment_report.json").is_file():
-        parser.error(f"seed artifact is missing alignment_report.json")
-    try:
-        seed_proposals = _proposals_path(seed)
-    except FileNotFoundError:
-        parser.error(f"seed artifact is missing alignment_proposals*.jsonl")
     output = Path(args.output_dir)
     if output.exists() and any(output.iterdir()):
         parser.error("output directory must be new or empty")
     output.mkdir(parents=True, exist_ok=True)
 
-    inputs = load_alignment_inputs(args.rule_output_dir, args.concept_output_dir, args.context_output_dir)
+    inputs = load_alignment_inputs(
+        args.rule_output_dir, args.concept_output_dir, args.context_output_dir,
+    )
     events = read_jsonl(args.initial_reviewed_memory) if args.initial_reviewed_memory else []
-    models = yaml.safe_load((Path(args.config_dir) / "models.yaml").read_text(encoding="utf-8"))["models"]
-    workers = args.workers or int(models[args.model_key].get("max_concurrency", 1))
-    current_artifact = seed
-    current_report = json.loads((seed / "alignment_report.json").read_text(encoding="utf-8"))
-    seed_memory = MemorySnapshot.build(inputs.concepts, inputs.relations, events)
-    current_report.setdefault("registered_concept_count", seed_memory.approved_memory_count)
-    current_report.setdefault("candidate_catalog_count", sum(
-        1 for row in seed_memory.concepts
-        if row.get("registration_status") != "APPROVED"
-    ))
-    loop_report: dict[str, Any] = {
-        "schema_version": "semantic_alignment.auto_loop.v1",
-        "seed_artifact_dir": str(seed),
-        "seed_role": "LEGACY_CANDIDATE_HARVEST_ONLY",
-        "base_input_manifest": inputs.input_manifest,
-        "policy": {
-            "scope": "existing_candidate_identity_and_type",
-            "approval": "MODEL_GATE_AND_DETERMINISTIC_GATE",
-            "new_concepts": "DEFERRED_UNTIL_SOURCE_EVIDENCE_BINDING",
-            "min_support": args.min_support,
-            "max_epochs": args.max_epochs,
-        },
-        "initial": _report_summary(current_report),
-        "epochs": [],
-        "stop_reason": None,
+    catalog = [dict(row) for row in inputs.concepts]
+    memory = MemorySnapshot.build(catalog, inputs.relations, events)
+    pending = build_initial_pending_concepts(inputs, memory)
+    initial_report = {
+        "pending_concept_count": len(pending),
+        "rank_confidence_counts": _distribution(pending, "rank_confidence"),
+        "candidate_origin_counts": _distribution(pending, "candidate_origin"),
+        "library_audit": audit_concept_library(memory),
+        "input_manifest": inputs.input_manifest,
     }
-    write_json(output / "loop_report.json", loop_report)
+    write_jsonl(output / "initial_pending_concepts.jsonl", pending)
+    write_json(output / "initial_report.json", initial_report)
+    if args.dry_run:
+        print(json.dumps(initial_report, ensure_ascii=False, indent=2))
+        return 0
 
-    for epoch in range(1, args.max_epochs + 1):
-        epoch_dir = output / f"epoch_{epoch:03d}"
-        memory_before = MemorySnapshot.build(inputs.concepts, inputs.relations, events)
-        proposals = read_jsonl(_proposals_path(current_artifact))
-        candidates = build_concept_admission_candidates(
-            proposals, memory_before, min_support=args.min_support,
-        )
-        write_jsonl(epoch_dir / "admission_candidates.jsonl", candidates)
-        gate = ConceptAdmissionGate(
+    models = yaml.safe_load(
+        (Path(args.config_dir) / "models.yaml").read_text(encoding="utf-8")
+    )["models"]
+    cycles: list[dict[str, Any]] = []
+    reviewed_concept_ids: set[str] = set()
+    stop_reason = "MAX_CYCLES_REACHED"
+    for cycle_number in range(1, args.max_cycles + 1):
+        cycle_dir = output / f"cycle_{cycle_number:03d}"
+        catalog = _catalog_with_candidates(catalog, pending)
+        event_count_before = len(events)
+        admission = SerialConceptAdmissionRunner(
             models, args.model_key,
-            ROOT / "prompts" / "semantic_alignment" / "concept_type_gate_v1.yaml",
-            epoch_dir / "type_gate",
-            workers=workers,
-            batch_size=args.review_batch_size,
+            ROOT / "prompts" / "semantic_alignment" / "concept_admission_v2.yaml",
+            cycle_dir / "admission_cache",
         )
-        reviews, approved, gate_report = gate.run(
-            candidates, memory_version=memory_before.version, refresh=args.refresh_reviews,
+        reviews, events, admission_report = admission.run(
+            pending,
+            concepts=catalog,
+            relations=inputs.relations,
+            reviewed_memory=events,
+            refresh=args.refresh_admissions,
+            limit=args.admission_limit,
         )
-        write_jsonl(epoch_dir / "admission_reviews.jsonl", reviews)
-        write_jsonl(epoch_dir / "approved_events.jsonl", approved)
-        epoch_row: dict[str, Any] = {
-            "epoch": epoch,
-            "source_artifact_dir": str(current_artifact),
-            "memory_before": memory_before.version,
-            "candidate_count": len(candidates),
-            "gate": gate_report,
-            "approved_event_count": len(approved),
-        }
-        if not approved:
-            epoch_row["stop_reason"] = "NO_NEW_APPROVALS"
-            loop_report["epochs"].append(epoch_row)
-            loop_report["stop_reason"] = "NO_NEW_APPROVALS"
-            write_json(output / "loop_report.json", loop_report)
+        reviewed_concept_ids.update(str(row["concept_id"]) for row in reviews)
+        write_jsonl(cycle_dir / "pending_concepts.jsonl", pending)
+        write_jsonl(cycle_dir / "admission_reviews.jsonl", reviews)
+        write_jsonl(output / "reviewed_memory.jsonl", events)
+
+        memory = MemorySnapshot.build(catalog, inputs.relations, events)
+        library_audit = audit_concept_library(memory)
+        write_json(cycle_dir / "concept_library_audit.json", library_audit)
+        if not all(library_audit["invariants"].values()):
+            stop_reason = "CONCEPT_LIBRARY_INVARIANT_FAILED"
+            cycles.append({
+                "cycle": cycle_number, "admission": admission_report,
+                "library_audit": library_audit, "stop_reason": stop_reason,
+            })
             break
 
-        events.extend(approved)
-        write_jsonl(output / "reviewed_memory.jsonl", events)
-        memory_after = MemorySnapshot.build(inputs.concepts, inputs.relations, events)
-        alignment_dir = epoch_dir / "alignment"
-        command = [
-            sys.executable, str(ROOT / "scripts" / "align_semantics.py"),
-            "--rule-output-dir", args.rule_output_dir,
-            "--concept-output-dir", args.concept_output_dir,
-            "--context-output-dir", args.context_output_dir,
-            "--output-dir", str(alignment_dir),
-            "--reviewed-memory", str(output / "reviewed_memory.jsonl"),
-            "--config-dir", args.config_dir,
-            "--model-key", args.model_key,
-            "--max-tier", "H3",
-            "--proposal-threshold", str(args.proposal_threshold),
-            "--candidates-per-object", str(args.candidates_per_object),
-            "--objects-per-package", str(args.objects_per_package),
-            "--max-package-chars", str(args.max_package_chars),
-            "--workers", str(workers),
-        ]
-        if args.refresh_alignments:
-            command.append("--refresh")
-        completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
-        (epoch_dir / "alignment_stdout.json").write_text(completed.stdout, encoding="utf-8")
-        (epoch_dir / "alignment_stderr.log").write_text(completed.stderr, encoding="utf-8")
-        if completed.returncode:
-            epoch_row.update({
-                "memory_after": memory_after.version,
-                "alignment_status": "FAILED",
-                "alignment_returncode": completed.returncode,
-            })
-            loop_report["epochs"].append(epoch_row)
-            loop_report["stop_reason"] = "ALIGNMENT_FAILED"
-            write_json(output / "loop_report.json", loop_report)
-            raise RuntimeError(f"alignment epoch {epoch} failed; see {epoch_dir / 'alignment_stderr.log'}")
-        next_report = json.loads((alignment_dir / "alignment_report.json").read_text(encoding="utf-8"))
-        before_summary = _report_summary(current_report)
-        after_summary = _report_summary(next_report)
-        epoch_row.update({
-            "memory_after": memory_after.version,
-            "alignment_status": "SUCCESS",
-            "before": before_summary,
-            "after": after_summary,
-            "comparison_scope": (
-                "LEGACY_SEED_NOT_REGISTRATION_COMPARABLE"
-                if epoch == 1 else "SAME_REGISTRATION_MODEL"
-            ),
-        })
-        if epoch > 1:
-            epoch_row["delta"] = _delta(before_summary, after_summary)
-        loop_report["epochs"].append(epoch_row)
-        current_artifact = alignment_dir
-        current_report = next_report
-        write_json(output / "loop_report.json", loop_report)
-    else:
-        loop_report["stop_reason"] = "MAX_EPOCHS_REACHED"
-        write_json(output / "loop_report.json", loop_report)
+        concept_input = cycle_dir / "concept_input"
+        _write_concept_input(concept_input, catalog, inputs.relations)
+        alignment_report, proposals = _run_alignment(
+            args,
+            concept_dir=concept_input,
+            reviewed_memory=output / "reviewed_memory.jsonl",
+            output_dir=cycle_dir / "alignment",
+        )
+        pending = build_pending_concepts_from_proposals(
+            proposals, inputs, memory,
+            reviewed_concept_ids=reviewed_concept_ids,
+        )
+        write_jsonl(cycle_dir / "next_pending_concepts.jsonl", pending)
+        cycle_report = {
+            "cycle": cycle_number,
+            "new_memory_event_count": len(events) - event_count_before,
+            "admission": admission_report,
+            "library_audit": library_audit,
+            "alignment": alignment_report,
+            "next_pending_concept_count": len(pending),
+            "next_rank_confidence_counts": _distribution(pending, "rank_confidence"),
+        }
+        cycles.append(cycle_report)
+        write_json(cycle_dir / "cycle_report.json", cycle_report)
+        if not pending:
+            stop_reason = "NO_PENDING_CONCEPTS"
+            break
+        if len(events) == event_count_before:
+            stop_reason = "NO_NEW_REGISTRATIONS"
+            break
 
-    print(json.dumps(loop_report, ensure_ascii=False, indent=2))
-    return 0
+    final_memory = MemorySnapshot.build(catalog, inputs.relations, events)
+    final_report = _summary(
+        cycles=cycles, events=events, memory=final_memory, stop_reason=stop_reason,
+    )
+    write_json(output / "lifecycle_report.json", final_report)
+    print(json.dumps(final_report, ensure_ascii=False, indent=2))
+    return 0 if stop_reason != "CONCEPT_LIBRARY_INVARIANT_FAILED" else 2
 
 
 if __name__ == "__main__":

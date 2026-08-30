@@ -37,6 +37,26 @@ def test_full_concept_approval_promotes_exact_match_without_mutating_source():
     assert "type" not in concepts[0]
 
 
+def test_approved_merge_removes_source_and_remaps_relations():
+    concepts = [
+        {"concept_id": "target", "canonical_name": "电弧", "aliases": [], "type": "object", "registration_status": "APPROVED"},
+        {"concept_id": "source", "canonical_name": "弧光", "aliases": [], "evidence_ids": ["u1"]},
+        {"concept_id": "parent", "canonical_name": "放电", "aliases": [], "type": "object", "registration_status": "APPROVED"},
+    ]
+    memory = MemorySnapshot.build(concepts, [{
+        "relation_id": "r1", "child_concept_id": "source",
+        "parent_concept_id": "parent", "type": "IS_A",
+    }], [{
+        "status": "APPROVED", "proposal_kind": "CONCEPT_MERGE",
+        "concept_id": "source", "target_concept_id": "target",
+    }])
+
+    assert {row["concept_id"] for row in memory.concepts} == {"target", "parent"}
+    target = next(row for row in memory.concepts if row["concept_id"] == "target")
+    assert "弧光" in target["aliases"]
+    assert memory.relations[0]["child_concept_id"] == "target"
+
+
 def test_reviewed_alias_enters_next_memory_snapshot():
     concepts = [{
         "concept_id": "c1", "canonical_name": "电池组", "aliases": [],

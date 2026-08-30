@@ -102,9 +102,44 @@ class MemorySnapshot:
                 approved = deepcopy(concept)
                 approved["registration_status"] = "APPROVED"
                 by_id[str(approved["concept_id"])] = approved
+                relation_rows.extend(deepcopy(event.get("relations") or []))
                 continue
             kind = str(event.get("proposal_kind") or "")
             concept_id = str(event.get("concept_id") or "")
+            if kind == ProposalKind.CONCEPT_MERGE:
+                target_id = str(event.get("target_concept_id") or "")
+                source = by_id.get(concept_id)
+                if source is None and isinstance(event.get("source_concept"), dict):
+                    source = deepcopy(event["source_concept"])
+                if source is None or target_id not in by_id:
+                    raise ValueError("concept merge requires existing source and target")
+                if by_id[target_id].get("registration_status") != "APPROVED":
+                    raise ValueError("concept merge target must be approved")
+                target = by_id[target_id]
+                aliases = [
+                    *list(target.get("aliases") or []),
+                    str(source.get("canonical_name") or ""),
+                    *list(source.get("aliases") or []),
+                    *list(event.get("aliases") or []),
+                ]
+                canonical_key = normalize_text(str(target.get("canonical_name") or ""))
+                target["aliases"] = list(dict.fromkeys(
+                    value for value in aliases
+                    if value and normalize_text(str(value)) != canonical_key
+                ))
+                for field in ("evidence_ids", "source_package_ids", "source_seed_ids"):
+                    target[field] = list(dict.fromkeys([
+                        *list(target.get(field) or []),
+                        *list(source.get(field) or []),
+                        *list(event.get(field) or []),
+                    ]))
+                by_id.pop(concept_id, None)
+                for relation in relation_rows:
+                    if str(relation.get("child_concept_id") or "") == concept_id:
+                        relation["child_concept_id"] = target_id
+                    if str(relation.get("parent_concept_id") or "") == concept_id:
+                        relation["parent_concept_id"] = target_id
+                continue
             if concept_id not in by_id:
                 raise ValueError(f"reviewed memory references unknown concept: {concept_id}")
             if kind == ProposalKind.TYPE_REVIEW:
@@ -212,6 +247,12 @@ class ConceptRegistry:
             and self.concepts[concept_id].get("registration_status") == "APPROVED"
         )
 
+    def registered_term_owners(self, text: str) -> list[str]:
+        return sorted({
+            concept_id for concept_id, _method in self.exact_index.get(normalize_text(text), [])
+            if self.is_approved(concept_id)
+        })
+
     def exact(self, text: str, *, concept_type: str) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -289,6 +330,32 @@ class ConceptRegistry:
             concept_type=concept_type, limit=top_k,
             match_method="FUZZY_CONTEXT",
         )
+        return result
+
+    def identity_candidates(self, text: str, *, top_k: int = 8) -> list[dict[str, Any]]:
+        """Recall registered concepts for identity comparison without a type assumption."""
+
+        normalized = normalize_text(text)
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for concept_id, method in self.exact_index.get(normalized, []):
+            if not self.is_approved(concept_id) or concept_id in seen:
+                continue
+            result.append(self.payload(concept_id, match_method=method, score=1.0))
+            seen.add(concept_id)
+        if len(result) >= top_k:
+            return result[:top_k]
+        for index, match_method in (
+            (self.name_ngram, "FUZZY_NAME"),
+            (self.ngram, "FUZZY_CONTEXT"),
+        ):
+            for concept_id, score in index.query(text, top_k=max(top_k * 4, top_k)):
+                if concept_id in seen or not self.is_approved(concept_id):
+                    continue
+                result.append(self.payload(concept_id, match_method=match_method, score=score))
+                seen.add(concept_id)
+                if len(result) >= top_k:
+                    return result
         return result
 
     def _append_contained_name_candidates(

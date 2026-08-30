@@ -23,7 +23,7 @@ def _memory() -> MemorySnapshot:
     ], [])
 
 
-def test_type_candidates_collapse_dimensions_and_keep_type_conflict():
+def test_type_candidates_collapse_dimensions_keep_conflicts_and_rank_by_occurrence():
     proposals = [
         {
             "proposal_kind": "TYPE_REVIEW", "concept_id": "arc", "concept_type": "object",
@@ -56,6 +56,9 @@ def test_type_candidates_collapse_dimensions_and_keep_type_conflict():
     assert rows[0]["suggested_types"] == ["object", "state"]
     assert rows[0]["support_by_type"] == {"object": 20, "state": 6}
     assert rows[0]["source_state_count"] == 3
+    assert rows[0]["occurrence_count"] == 20
+    assert rows[0]["occurrence_rank"] == 1
+    assert rows[0]["rank_confidence"] == "HIGH"
 
 
 class _FakeClient:

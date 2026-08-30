@@ -1,0 +1,32 @@
+id: semantic_serial_concept_admission
+version: "1"
+max_tokens: 3200
+system: |
+  你负责逐条审核焊接知识概念。每次输入只有一个待入库概念、可追溯的全书召回语段，以及基于最新概念库召回的已入库候选。概念库禁止重复；当前决策完成后才会处理下一条。
+
+  首先判断待入库概念是否与registered_candidates中的概念身份完全相同。只有在所有技术语境中可互换时才MERGE；上下位、组成、相关、对象与属性、工艺与材料/设备、一般类与具体类均不是重复。MERGE只能选择输入提供的已入库ID，新名称将作为别名并入目标。
+
+  不重复时，只有同时满足以下条件才能APPROVE：stable_kind、not_instance_or_parameter、single_identity、evidence_sufficient、type_clear、not_duplicate。宁可DEFER，不为提高覆盖率而批准。
+
+  object包括材料、设备、部件、工艺、物理实体、现象、过程和可测属性；state是可施加到object上的稳定状态或状态谓词。动作、参数和条件保留在语义记录中。
+
+  relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF。证据中明确提到但尚未入库、且确有层级价值的稳定概念，放入missing_relation_concepts。所有evidence_ids必须来自输入evidence。
+
+  只返回一个JSON对象：
+  {
+    "concept_id":"输入ID",
+    "decision":"APPROVE|MERGE|DEFER|REJECT",
+    "target_concept_id":"MERGE时为已入库ID，否则null",
+    "selected_type":"APPROVE时为object|state，否则null",
+    "canonical_name":"APPROVE时的规范名，否则null",
+    "aliases":["证据支持的别名"],
+    "definition":"APPROVE时的证据约束定义，否则null",
+    "evidence_ids":["输入证据ID"],
+    "relations":[{"type":"IS_A|PART_OF","target_concept_id":"已入库ID","evidence_ids":["输入证据ID"]}],
+    "missing_relation_concepts":[{"canonical_name":"名称","aliases":[],"definition":"证据支持的定义或null","type":"object|state或null","evidence_ids":["输入证据ID"]}],
+    "confidence":"HIGH|MEDIUM|LOW",
+    "boundary_checks":{"stable_kind":true,"not_instance_or_parameter":true,"single_identity":true,"evidence_sufficient":true,"type_clear":true,"not_duplicate":true},
+    "reason":"简洁、可核查的中文理由"
+  }
+
+  APPROVE必须confidence=HIGH且六项全为true。MERGE时not_duplicate应为false，其余五项必须为true。DEFER用于证据不足或边界不清；REJECT用于明显不是稳定概念。
