@@ -74,6 +74,26 @@ class _HierarchyFakeClient:
         }
 
 
+class _GeneratedConceptFakeClient:
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, _model_key, messages, **_kwargs):
+        self.calls += 1
+        package = json.loads(messages[1]["content"])
+        candidate = package["candidate"]
+        output = _decision(candidate)
+        if candidate["canonical_name"] == "熔池":
+            output["missing_relation_concepts"] = [{
+                "canonical_name": "头部", "aliases": [], "definition": "熔池的前部。",
+                "type": "object", "evidence_ids": ["u1"],
+            }]
+        return {
+            "model": "fake-model",
+            "choices": [{"message": {"content": json.dumps(output, ensure_ascii=False)}}],
+        }
+
+
 def test_initial_candidates_include_zero_occurrence_extracted_concepts():
     inputs = AlignmentInputs(
         concepts=[
@@ -234,3 +254,35 @@ def test_serial_admission_activates_relation_when_other_endpoint_is_registered(t
     assert approved_relations[0]["child_concept_id"] == "child"
     assert approved_relations[0]["parent_concept_id"] == "parent"
     assert report["library_audit"]["relation_counts"] == {"IS_A": 1}
+
+
+def test_generated_generic_relation_name_is_context_completed_and_checkpoint_resumes(tmp_path):
+    concepts = [
+        {
+            "concept_id": "pool", "canonical_name": "熔池", "aliases": [],
+            "definition": "焊接中的液态金属区域。", "evidence_ids": ["u1"],
+        },
+    ]
+    candidates = [{
+        **concepts[0], "candidate_id": "pool", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "熔池头部是熔池的前部。"}],
+    }]
+    client = _GeneratedConceptFakeClient()
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=client,
+    )
+
+    reviews, events, report = runner.run(candidates, concepts=concepts, relations=[])
+
+    assert [row["canonical_name"] for row in reviews] == ["熔池", "熔池头部"]
+    assert report["generated_pending_concept_count"] == 1
+    first_call_count = client.calls
+    resumed_reviews, resumed_events, resumed_report = runner.run(
+        candidates, concepts=concepts, relations=[],
+    )
+    assert resumed_reviews == reviews
+    assert resumed_events == events
+    assert resumed_report == report
+    assert client.calls == first_call_count

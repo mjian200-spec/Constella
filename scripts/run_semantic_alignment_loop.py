@@ -234,6 +234,10 @@ def main() -> int:
     parser.add_argument("--workers", type=int)
     parser.add_argument("--refresh-admissions", action="store_true")
     parser.add_argument("--refresh-alignments", action="store_true")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Reuse per-concept admission checkpoints and cached model results in an existing output directory.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.max_cycles < 1:
@@ -244,7 +248,7 @@ def main() -> int:
         parser.error("--object-limit must be positive")
 
     output = Path(args.output_dir)
-    if output.exists() and any(output.iterdir()):
+    if output.exists() and any(output.iterdir()) and not args.resume:
         parser.error("output directory must be new or empty")
     output.mkdir(parents=True, exist_ok=True)
 

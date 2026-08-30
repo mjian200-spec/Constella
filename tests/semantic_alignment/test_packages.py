@@ -84,6 +84,28 @@ def test_unprocessed_objects_are_banded_by_rank_one_five_twenty_five():
     assert counts == {PackageTier.H1: 1, PackageTier.H2: 5, PackageTier.H3: 25}
 
 
+def test_unapproved_exact_match_id_is_not_leaked_to_object_llm_package():
+    inputs = AlignmentInputs(
+        concepts=[{
+            "concept_id": "pending_arc", "canonical_name": "电弧", "aliases": [],
+            "type": "object", "registration_status": "CANDIDATE",
+        }],
+        relations=[],
+        rules=[{
+            "id": "r1", "conditions": [],
+            "antecedents": [{"id": "s1", "object": "电弧", "raw_state": "稳定"}],
+            "consequents": [],
+        }],
+        context_packages={}, units={},
+    )
+    package = SemanticPackageBuilder(inputs).object_alignment_packages()[0]
+    case = package["cases"][0]
+
+    assert case["candidates"] == []
+    assert case["exact_resolution"]["concept_id"] is None
+    assert "pending_arc" not in str(case)
+
+
 def test_source_states_preserve_object_context_and_frequency():
     inputs = _inputs()
     inputs.rules.append({

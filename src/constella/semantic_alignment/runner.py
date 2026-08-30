@@ -140,6 +140,7 @@ class SemanticAlignmentRunner:
         errors: list[str] = []
         raw_outputs: list[str] = []
         for attempt in range(1, 3):
+            content: str | None = None
             try:
                 response = self.client.complete(
                     self.model_key,
@@ -173,6 +174,8 @@ class SemanticAlignmentRunner:
             except Exception as error:
                 errors.append(f"{type(error).__name__}: {error}")
                 if attempt == 1:
+                    if content is not None:
+                        messages.append({"role": "assistant", "content": content})
                     messages.append({
                         "role": "user",
                         "content": f"输出不符合协议：{error}。只返回修正后的JSON，不要解释。",
@@ -230,7 +233,10 @@ class SemanticAlignmentRunner:
                     raise ValueError("every core object requires non-empty text")
                 concept_id = core.get("concept_id")
                 if concept_id is not None and concept_id not in allowed:
-                    raise ValueError("core concept_id must be a candidate of the same case or null")
+                    raise ValueError(
+                        f"object {row['object_id']} core concept_id {concept_id} is not in "
+                        f"this case candidates {sorted(allowed)}; use null when none matches"
+                    )
                 key = (core["text"].strip(), str(concept_id or ""))
                 if key in seen_core:
                     raise ValueError("duplicate core object")

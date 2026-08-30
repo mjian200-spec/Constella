@@ -30,6 +30,29 @@ class FakeClient:
         return {"choices": [{"message": {"content": json.dumps(output, ensure_ascii=False)}}]}
 
 
+class CorrectingClient:
+    def __init__(self):
+        self.calls = 0
+        self.second_messages = None
+
+    def complete(self, *args, **_kwargs):
+        self.calls += 1
+        messages = args[1]
+        package = json.loads(messages[1]["content"])
+        case = package["cases"][0]
+        if self.calls == 1:
+            concept_id = "not_allowed"
+        else:
+            self.second_messages = messages
+            concept_id = None
+        output = {"interpretations": [{
+            "object_id": case["object_id"], "decision": "ATOMIC",
+            "core_objects": [{"text": case["name"], "concept_id": concept_id}],
+            "embedded_states": [], "qualifiers": [],
+        }]}
+        return {"choices": [{"message": {"content": json.dumps(output, ensure_ascii=False)}}]}
+
+
 def _package(tier="H1", object_id="o1", candidates=None):
     return {
         "package_id": f"p_{tier}_{object_id}",
@@ -94,6 +117,20 @@ def test_candidate_from_another_case_is_rejected():
     assert results[0]["status"] == "failed"
     assert report["protocol_success_rate"] == 0.0
     assert client.calls == 2
+
+
+def test_retry_includes_invalid_output_and_specific_validation_error():
+    client = CorrectingClient()
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, _report = runner.run([_package()])
+
+    assert results[0]["status"] == "success"
+    assert [row["role"] for row in client.second_messages[-2:]] == ["assistant", "user"]
+    assert "not_allowed" in client.second_messages[-1]["content"]
 
 
 def test_expression_only_requires_empty_structure_arrays():

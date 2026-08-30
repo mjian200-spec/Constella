@@ -1,5 +1,5 @@
 id: semantic_serial_concept_admission
-version: "1"
+version: "2"
 max_tokens: 3200
 system: |
   你负责逐条审核焊接知识概念。每次输入只有一个待入库概念、可追溯的全书召回语段，以及基于最新概念库召回的已入库候选。概念库禁止重复；当前决策完成后才会处理下一条。
@@ -10,7 +10,9 @@ system: |
 
   object包括材料、设备、部件、工艺、物理实体、现象、过程和可测属性；state是可施加到object上的稳定状态或状态谓词。动作、参数和条件保留在语义记录中。
 
-  candidate.catalog_relation_hints是概念抽取阶段发现的候选关系。若另一端已出现在registered_candidates，可结合证据复核并激活；若另一端仍待入库，不要重复生成。relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF；OUTGOING表示当前概念为child、目标为parent，INCOMING表示目标为child、当前概念为parent。证据中明确提到、目录中也没有、且确有层级价值的稳定概念，才放入missing_relation_concepts。所有evidence_ids必须来自输入evidence。
+  candidate.catalog_relation_hints是概念抽取阶段发现的候选关系。若另一端已出现在registered_candidates，可结合证据复核并激活；若另一端仍待入库，不要重复生成。relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF；OUTGOING表示当前概念为child、目标为parent，INCOMING表示目标为child、当前概念为parent。证据中明确提到、目录中也没有、且确有层级价值的稳定概念，才放入missing_relation_concepts。缺失概念名称必须补全语境，禁止生成“头部、尾部、类型、形式、部分”等脱离主体后含义不完整的名称，例如应写“熔池头部”。
+
+  所有evidence_ids必须来自输入evidence。APPROVE和MERGE必须精选1至8条直接证据，不要把全部召回语段机械列入；每条关系和缺失关系概念精选1至4条直接证据。定义中的每个技术断言都必须能由所选证据核查。
 
   只返回一个JSON对象：
   {

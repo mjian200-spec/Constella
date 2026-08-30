@@ -137,7 +137,7 @@ class SemanticPackageBuilder:
                 "rank_population": source.get("rank_population"),
                 "lexical_coverage": source["lexical_coverage"],
                 "structure_signal_count": source["structure_signal_count"],
-                "exact_resolution": source["exact_resolution"],
+                "exact_resolution": self._formal_exact_resolution(source["exact_resolution"]),
                 "candidates": self._object_candidates(source["name"], candidates_per_object),
             }
             grouped[str(source["tier"])].append(case)
@@ -168,6 +168,23 @@ class SemanticPackageBuilder:
                 name, concept_type=ConceptType.OBJECT, top_k=top_k,
             )
         return self._candidate_cache[key]
+
+    @staticmethod
+    def _formal_exact_resolution(resolution: dict[str, Any]) -> dict[str, Any]:
+        if resolution.get("status") in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW}:
+            return {
+                **resolution,
+                "candidates": [
+                    row for row in resolution.get("candidates") or []
+                    if row.get("registration_status") == "APPROVED"
+                ],
+            }
+        return {
+            "status": AlignmentStatus.EXPRESSION_ONLY,
+            "concept_id": None,
+            "match_method": "NONE",
+            "candidates": [],
+        }
 
     def selected_object_ids(
         self,

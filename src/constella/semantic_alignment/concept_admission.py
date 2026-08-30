@@ -23,6 +23,9 @@ _CHECKS = {
     "evidence_sufficient", "type_clear", "not_duplicate",
 }
 _RELATION_TYPES = {"IS_A", "PART_OF"}
+_GENERIC_RELATION_NAMES = {
+    "头部", "尾部", "上部", "下部", "内部", "外部", "类型", "种类", "形式", "部分",
+}
 
 
 def build_initial_pending_concepts(
@@ -269,13 +272,38 @@ class SerialConceptAdmissionRunner:
         refresh: bool = False,
         limit: int | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-        events = list(reviewed_memory or [])
-        concept_rows = [dict(row) for row in concepts]
-        queue = deque(candidates[:limit] if limit is not None else candidates)
-        queued_names = {normalize_text(str(row.get("canonical_name") or "")) for row in queue}
-        processed_ids: set[str] = set()
-        reviews: list[dict[str, Any]] = []
-        generated_count = 0
+        base_events = list(reviewed_memory or [])
+        selected_candidates = candidates[:limit] if limit is not None else candidates
+        checkpoint_path = self.output_dir / "admission_checkpoint.json"
+        checkpoint_key = stable_id("serial_admission_checkpoint", {
+            "candidate_ids": [str(row["concept_id"]) for row in selected_candidates],
+            "concept_ids": [str(row["concept_id"]) for row in concepts],
+            "relation_ids": [str(row.get("relation_id") or "") for row in relations],
+            "base_event_ids": [str(row.get("event_id") or "") for row in base_events],
+            "prompt_id": self.prompt["id"],
+            "prompt_version": str(self.prompt["version"]),
+            "model": self.models[self.model_key]["model"],
+        })
+        saved = self._load_checkpoint(checkpoint_path, checkpoint_key) if not refresh else None
+        if saved:
+            events = base_events + list(saved["new_events"])
+            concept_rows = list(saved["concept_rows"])
+            queue = deque(saved["queue"])
+            processed_ids = set(saved["processed_ids"])
+            reviews = list(saved["reviews"])
+            generated_count = int(saved["generated_count"])
+        else:
+            events = list(base_events)
+            concept_rows = [dict(row) for row in concepts]
+            queue = deque(selected_candidates)
+            processed_ids = set()
+            reviews = []
+            generated_count = 0
+        queued_names = {
+            normalize_text(str(row.get("canonical_name") or ""))
+            for row in concept_rows
+            if normalize_text(str(row.get("canonical_name") or ""))
+        }
         while queue:
             candidate = queue.popleft()
             candidate_id = str(candidate["concept_id"])
@@ -314,6 +342,15 @@ class SerialConceptAdmissionRunner:
                     "registration_status": "CANDIDATE",
                 })
                 generated_count += 1
+            self._atomic_json(checkpoint_path, {
+                "checkpoint_key": checkpoint_key,
+                "new_events": events[len(base_events):],
+                "concept_rows": concept_rows,
+                "queue": list(queue),
+                "processed_ids": sorted(processed_ids),
+                "reviews": reviews,
+                "generated_count": generated_count,
+            })
 
         final_memory = MemorySnapshot.build(concept_rows, relations, events)
         report = {
@@ -330,6 +367,22 @@ class SerialConceptAdmissionRunner:
             "library_audit": audit_concept_library(final_memory),
         }
         return reviews, events, report
+
+    @staticmethod
+    def _load_checkpoint(path: Path, checkpoint_key: str) -> dict[str, Any] | None:
+        if not path.is_file():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        required = {
+            "new_events", "concept_rows", "queue", "processed_ids", "reviews",
+            "generated_count",
+        }
+        if value.get("checkpoint_key") != checkpoint_key or not required <= set(value):
+            return None
+        return value
 
     def _package(
         self,
@@ -368,6 +421,7 @@ class SerialConceptAdmissionRunner:
         ]
         errors: list[str] = []
         for attempt in range(1, 3):
+            content: str | None = None
             try:
                 response = self.client.complete(
                     self.model_key, messages, response_format={"type": "json_object"},
@@ -378,7 +432,8 @@ class SerialConceptAdmissionRunner:
                     ],
                     max_tokens=int(self.prompt.get("max_tokens", 3200)),
                 )
-                output = json.loads(response["choices"][0]["message"]["content"])
+                content = response["choices"][0]["message"]["content"]
+                output = json.loads(content)
                 self._validate(package, output)
                 result = {
                     "package_id": package["package_id"], "status": "success",
@@ -390,6 +445,8 @@ class SerialConceptAdmissionRunner:
             except Exception as error:
                 errors.append(f"{type(error).__name__}: {error}")
                 if attempt == 1:
+                    if content is not None:
+                        messages.append({"role": "assistant", "content": content})
                     messages.append({
                         "role": "user",
                         "content": f"输出不符合协议：{error}。只返回修正后的JSON。",
@@ -417,6 +474,9 @@ class SerialConceptAdmissionRunner:
             raise ValueError("boundary checks must be booleans")
         if not isinstance(output.get("reason"), str) or not output["reason"].strip():
             raise ValueError("reason is required")
+        for field in ("aliases", "evidence_ids", "relations", "missing_relation_concepts"):
+            if not isinstance(output.get(field), list):
+                raise ValueError(f"{field} must be a list")
         registered_ids = {str(row["id"]) for row in package["registered_candidates"]}
         target = output.get("target_concept_id")
         if decision == "MERGE" and str(target or "") not in registered_ids:
@@ -433,6 +493,17 @@ class SerialConceptAdmissionRunner:
         }
         if not set(output.get("evidence_ids") or []) <= allowed_evidence:
             raise ValueError("decision cites evidence outside supplied book recall")
+        if decision == "APPROVE":
+            if not isinstance(output.get("canonical_name"), str) or not output["canonical_name"].strip():
+                raise ValueError("approval requires canonical_name")
+            if not isinstance(output.get("definition"), str) or not output["definition"].strip():
+                raise ValueError("approval requires evidence-grounded definition")
+            if not 1 <= len(output["evidence_ids"]) <= 8:
+                raise ValueError("approval requires one to eight direct evidence ids")
+        if decision == "MERGE" and not 1 <= len(output["evidence_ids"]) <= 8:
+            raise ValueError("merge requires one to eight direct evidence ids")
+        if len(output["relations"]) > 8 or len(output["missing_relation_concepts"]) > 8:
+            raise ValueError("at most eight relations or missing concepts are allowed")
         for relation in output.get("relations") or []:
             if relation.get("type") not in _RELATION_TYPES:
                 raise ValueError("invalid registered relation type")
@@ -442,6 +513,17 @@ class SerialConceptAdmissionRunner:
                 raise ValueError("relation target must be registered and supplied")
             if not set(relation.get("evidence_ids") or []) <= allowed_evidence:
                 raise ValueError("relation cites unknown evidence")
+            if not 1 <= len(relation.get("evidence_ids") or []) <= 4:
+                raise ValueError("relation requires one to four direct evidence ids")
+        for missing in output.get("missing_relation_concepts") or []:
+            if not isinstance(missing, dict) or not str(missing.get("canonical_name") or "").strip():
+                raise ValueError("missing relation concept requires canonical_name")
+            if missing.get("type") not in {None, ConceptType.OBJECT, ConceptType.STATE}:
+                raise ValueError("invalid missing relation concept type")
+            if not set(missing.get("evidence_ids") or []) <= allowed_evidence:
+                raise ValueError("missing relation concept cites unknown evidence")
+            if not 1 <= len(missing.get("evidence_ids") or []) <= 4:
+                raise ValueError("missing relation concept requires one to four direct evidence ids")
 
     def _review(
         self,
@@ -573,6 +655,8 @@ class SerialConceptAdmissionRunner:
             name = str(row.get("canonical_name") or "").strip()
             if not name:
                 continue
+            if normalize_text(name) in {normalize_text(value) for value in _GENERIC_RELATION_NAMES}:
+                name = f"{candidate['canonical_name']}{name}"
             evidence_ids = list(row.get("evidence_ids") or [])
             concept_id = stable_id("concept", normalize_text(name))
             result.append({
