@@ -179,3 +179,29 @@ def test_state_repair_accepts_multiple_atomic_parts():
         results, report = runner.run([package])
     assert results[0]["status"] == "success"
     assert report["decision_coverage_rate"] == 1.0
+
+
+def test_state_repair_normalizes_repaired_id_out_of_terminal_lists():
+    package = {
+        "package_id": "p1", "package_type": "state_repair",
+        "cases": [
+            {"state_id": "s1", "candidates": [{"id": "oil"}]},
+            {"state_id": "s2", "candidates": []},
+        ],
+    }
+    client = FakeClient({
+        "repairs": [{"state_id": "s1", "parts": [
+            {"concept_id": "oil", "object_name": "油污", "state_text": "较多"},
+        ]}, {"state_id": "s2", "parts": []}],
+        "unresolved_ids": ["s1"], "invalid_ids": ["s1", "s2"],
+    })
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, report = runner.run([package])
+    assert results[0]["status"] == "success"
+    assert results[0]["output"]["unresolved_ids"] == []
+    assert results[0]["output"]["invalid_ids"] == ["s2"]
+    assert report["decision_coverage_rate"] == 1.0

@@ -139,6 +139,7 @@ class SemanticAlignmentRunner:
                 content = response["choices"][0]["message"]["content"]
                 raw_outputs.append(content)
                 value = json.loads(content)
+                value = self._normalize_output(package, value)
                 covered = self._validate(package, value)
                 result = {
                     "package_id": package["package_id"],
@@ -179,6 +180,32 @@ class SemanticAlignmentRunner:
         except Exception as error:
             result["cache_write_error"] = f"{type(error).__name__}: {error}"
         return result
+
+    @staticmethod
+    def _normalize_output(package: dict[str, Any], value: Any) -> Any:
+        if package.get("package_type") != "state_repair" or not isinstance(value, dict):
+            return value
+        repairs = value.get("repairs")
+        if not isinstance(repairs, list):
+            return value
+        repairs = [
+            row for row in repairs
+            if isinstance(row, dict) and isinstance(row.get("parts"), list) and row["parts"]
+        ]
+        value["repairs"] = repairs
+        repaired_ids = {row.get("state_id") for row in repairs if isinstance(row, dict)}
+        unresolved = value.get("unresolved_ids")
+        invalid = value.get("invalid_ids")
+        if isinstance(unresolved, list):
+            value["unresolved_ids"] = list(dict.fromkeys(
+                state_id for state_id in unresolved if state_id not in repaired_ids
+            ))
+        terminal_ids = repaired_ids | set(value.get("unresolved_ids") or [])
+        if isinstance(invalid, list):
+            value["invalid_ids"] = list(dict.fromkeys(
+                state_id for state_id in invalid if state_id not in terminal_ids
+            ))
+        return value
 
     @staticmethod
     def _quality(package: dict[str, Any], value: dict[str, Any]) -> dict[str, int] | None:
@@ -295,7 +322,13 @@ class SemanticAlignmentRunner:
         repaired_ids = [row.get("state_id") for row in decisions]
         covered = [*repaired_ids, *unresolved, *invalid]
         if len(covered) != len(set(covered)) or set(covered) != set(cases):
-            raise ValueError("repair output must cover every state exactly once")
+            missing = sorted(set(cases) - set(covered))
+            unexpected = sorted(set(covered) - set(cases))
+            duplicates = sorted(state_id for state_id in set(covered) if covered.count(state_id) > 1)
+            raise ValueError(
+                "repair output must cover every state exactly once; "
+                f"missing={missing}, unexpected={unexpected}, duplicates={duplicates}"
+            )
         allowed = {
             candidate["id"] for case in package["cases"] for candidate in case["candidates"]
         } | {"NEW"}
