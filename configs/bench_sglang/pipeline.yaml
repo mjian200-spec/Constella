@@ -1,0 +1,10 @@
+resolver_version: 1
+default_workers: 1
+image_size_policy: deferred_until_real_failure
+# E2E bench run: context builder stages route resource understanding
+# and package routing through the qwen3.8-27b instance on :8000.
+resource_model_key: qwen3_8_27b
+package_router_model_key: qwen3_8_27b
+resource_workers: 8
+package_workers: 16
+max_workers: 16

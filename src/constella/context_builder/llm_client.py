@@ -7,7 +7,14 @@ from urllib.request import Request, urlopen
 
 
 class LLMClient:
-    """Small OpenAI-compatible client for a separately served vLLM model."""
+    """Small OpenAI-compatible client for a separately served model.
+
+    The sglang 0.5.18 server runs in the prebuilt Docker image
+    ``sglang-22.04-cu130`` (e.g. ``docker run -d --gpus device=1 --network host
+    -v /DATA/jm/llms:/DATA/jm/llms sglang-22.04-cu130 -m sglang.launch_server
+    ...``); the full startup command is in
+    docs/qwen38_27b_inference_benchmark_20260830.md.
+    """
 
     def __init__(self, models: dict[str, Any], event_sink=None) -> None:
         self.models = models

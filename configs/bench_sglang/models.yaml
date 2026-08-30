@@ -1,0 +1,43 @@
+models:
+  large:
+    base_url: http://127.0.0.1:8000/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.5-9b
+    temperature: 0
+    max_tokens: 4096
+    timeout: 300
+    max_retries: 2
+    request_options:
+      chat_template_kwargs:
+        enable_thinking: false
+  large_27b:
+    base_url: http://127.0.0.1:8001/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.5-27b
+    temperature: 0
+    max_tokens: 4096
+    timeout: 300
+    max_retries: 2
+    request_options:
+      chat_template_kwargs:
+        enable_thinking: false
+  qwen3_8_27b:
+    base_url: http://127.0.0.1:8000/v1
+    api_key: local
+    model: /DATA/jm/llms/qwen3.8-27b
+    temperature: 0
+    max_tokens: 4096
+    timeout: 900
+    max_retries: 2
+    max_concurrency: 16
+    request_options:
+      chat_template_kwargs:
+        enable_thinking: false
+  gemma_31b:
+    base_url: http://127.0.0.1:8002/v1
+    api_key: local
+    model: /DATA/jm/llms/gemma-4-31b
+    temperature: 0
+    max_tokens: 4096
+    timeout: 900
+    max_retries: 2
