@@ -288,7 +288,7 @@ function buildBranch(nodeId, relation = null, path = new Set()) {
   nextPath.add(nodeId);
   const descendants = cyclic ? [] : (data.children.get(nodeId) || []);
   const relationTag = relation ? `<span class="tree-relation ${relation.type.toLowerCase().replace("_", "-")}">${esc(relationLabel(relation.type))}</span>` : '<span class="tree-root-tag">根概念</span>';
-  return `<li class="tree-item${descendants.length ? "" : " leaf"}" data-id="${esc(nodeId)}" data-title="${esc(node.title.toLowerCase())}">
+  return `<li class="tree-item${descendants.length ? " collapsed" : " leaf"}" data-id="${esc(nodeId)}" data-title="${esc(node.title.toLowerCase())}">
     <div class="tree-row">
       <button class="tree-toggle" aria-label="${descendants.length ? "折叠或展开子概念" : "无子概念"}" ${descendants.length ? "" : "disabled"}>›</button>
       <button class="tree-concept${node.id === app.selectedId ? " selected" : ""}" data-id="${esc(node.id)}">
