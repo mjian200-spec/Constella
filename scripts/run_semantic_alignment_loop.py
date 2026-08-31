@@ -33,6 +33,37 @@ def _distribution(rows: list[dict[str, Any]], field: str) -> dict[str, int]:
     return dict(sorted(Counter(str(row.get(field) or "UNKNOWN") for row in rows).items()))
 
 
+def _supplement_review_history(
+    events: list[dict[str, Any]], reviews: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Backfill non-accepted legacy reviews without changing the formal library."""
+    represented = {str(row.get("source_review_id") or "") for row in events}
+    result = list(events)
+    for review in reviews:
+        review_id = str(review.get("review_id") or "")
+        if not review_id or review_id in represented or review.get("decision") == "FAILED":
+            continue
+        if review.get("accepted"):
+            raise ValueError(f"accepted review is missing its approval event: {review_id}")
+        decision = str(review.get("decision") or "NOT_ACCEPTED")
+        result.append({
+            "event_id": f"legacy_review_event_{review_id}",
+            "status": decision if decision in {"DEFER", "REJECT"} else "NOT_ACCEPTED",
+            "proposal_kind": "CONCEPT_REVIEW",
+            "concept_id": str(review["concept_id"]),
+            "canonical_name": str(review.get("canonical_name") or ""),
+            "base_memory_version": review.get("memory_version"),
+            "source_review_id": review_id,
+            "decision": decision,
+            "accepted": False,
+            "gate_reason": review.get("gate_reason"),
+            "model_decision": review.get("model_decision"),
+            "legacy_backfill": True,
+        })
+        represented.add(review_id)
+    return result
+
+
 def _catalog_with_candidates(
     catalog: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
@@ -231,6 +262,10 @@ def main() -> int:
         "--context-output-dir", default="outputs/context_builder_semantic_qwen38_27b_20260829",
     )
     parser.add_argument("--initial-reviewed-memory")
+    parser.add_argument(
+        "--initial-review-history", action="append", default=[],
+        help="Legacy admission_reviews JSONL to backfill DEFER/REJECT/non-accepted memory.",
+    )
     parser.add_argument("--config-dir", default=str(ROOT / "configs" / "concept_layer"))
     parser.add_argument("--model-key", default="qwen3_8_27b")
     parser.add_argument("--max-cycles", type=int, default=6)
@@ -265,6 +300,8 @@ def main() -> int:
         args.rule_output_dir, args.concept_output_dir, args.context_output_dir,
     )
     events = read_jsonl(args.initial_reviewed_memory) if args.initial_reviewed_memory else []
+    for history_path in args.initial_review_history:
+        events = _supplement_review_history(events, read_jsonl(history_path))
     catalog = [dict(row) for row in inputs.concepts]
     memory = MemorySnapshot.build(catalog, inputs.relations, events)
     pending = build_initial_pending_concepts(inputs, memory)

@@ -82,7 +82,10 @@ def build_initial_pending_concepts(
 
     rows: list[dict[str, Any]] = []
     for concept in memory.concepts:
-        if concept.get("registration_status") == "APPROVED":
+        if (
+            concept.get("registration_status") == "APPROVED"
+            or str(concept["concept_id"]) in memory.reviewed_concept_ids
+        ):
             continue
         terms = {
             normalize_text(str(value)) for value in [
@@ -189,7 +192,7 @@ def build_pending_concepts_from_proposals(
         concept_id = str(proposal.get("concept_id") or "") or stable_id(
             "concept", {"name": normalize_text(name), "type": concept_type},
         )
-        if concept_id in reviewed or any(
+        if concept_id in reviewed or concept_id in memory.reviewed_concept_ids or any(
             str(row["concept_id"]) == concept_id and row.get("registration_status") == "APPROVED"
             for row in memory.concepts
         ):
@@ -584,7 +587,7 @@ class SerialConceptAdmissionRunner:
             "prompt_version": str(self.prompt["version"]),
             "configured_model": self.models[self.model_key]["model"],
         }
-        event = self._event(candidate, review) if accepted else None
+        event = self._event(candidate, review)
         generated = self._generated_candidates(candidate, review) if accepted else []
         return review, event, generated
 
@@ -616,6 +619,25 @@ class SerialConceptAdmissionRunner:
     @staticmethod
     def _event(candidate: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
         decision = review["model_decision"]
+        if not review["accepted"]:
+            outcome = str(decision["decision"])
+            status = outcome if outcome in {"DEFER", "REJECT"} else "NOT_ACCEPTED"
+            return {
+                "event_id": stable_id("memory_event", review["review_id"]),
+                "status": status,
+                "proposal_kind": "CONCEPT_REVIEW",
+                "concept_id": candidate["concept_id"],
+                "canonical_name": candidate["canonical_name"],
+                "base_memory_version": review["memory_version"],
+                "source_review_id": review["review_id"],
+                "decision": outcome,
+                "accepted": False,
+                "gate_reason": review["gate_reason"],
+                "reason": decision["reason"],
+                "confidence": decision["confidence"],
+                "boundary_checks": decision["boundary_checks"],
+                "model_decision": decision,
+            }
         common = {
             "event_id": stable_id("memory_event", review["review_id"]),
             "status": "APPROVED", "concept_id": candidate["concept_id"],

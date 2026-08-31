@@ -73,6 +73,7 @@ class MemorySnapshot:
     relations: list[dict[str, Any]]
     version: str
     approved_memory_count: int
+    reviewed_concept_ids: frozenset[str]
 
     @classmethod
     def build(
@@ -92,7 +93,11 @@ class MemorySnapshot:
         for relation in relation_rows:
             relation.setdefault("registration_status", "CANDIDATE")
         approved_count = 0
+        reviewed_concept_ids: set[str] = set()
         for event in reviewed_memory or []:
+            concept_id = str(event.get("concept_id") or "")
+            if concept_id:
+                reviewed_concept_ids.add(concept_id)
             if str(event.get("status") or "").upper() != "APPROVED":
                 continue
             approved_count += 1
@@ -107,7 +112,6 @@ class MemorySnapshot:
                 relation_rows.extend(deepcopy(event.get("relations") or []))
                 continue
             kind = str(event.get("proposal_kind") or "")
-            concept_id = str(event.get("concept_id") or "")
             if kind == ProposalKind.CONCEPT_MERGE:
                 target_id = str(event.get("target_concept_id") or "")
                 source = by_id.get(concept_id)
@@ -191,6 +195,7 @@ class MemorySnapshot:
             relations=payload["relations"],
             version=stable_id("memory", payload),
             approved_memory_count=approved_count,
+            reviewed_concept_ids=frozenset(reviewed_concept_ids),
         )
 
 

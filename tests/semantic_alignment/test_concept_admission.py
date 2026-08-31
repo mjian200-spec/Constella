@@ -107,6 +107,14 @@ class _RecoveringFakeClient:
         return {"model": "fake-model", "choices": [{"message": {"content": content}}]}
 
 
+class _RejectingFakeClient:
+    def complete(self, _model_key, messages, **_kwargs):
+        package = json.loads(messages[1]["content"])
+        output = _decision(package["candidate"])
+        output.update({"decision": "REJECT", "selected_type": None})
+        return {"model": "fake-model", "choices": [{"message": {"content": json.dumps(output)}}]}
+
+
 def test_initial_candidates_include_zero_occurrence_extracted_concepts():
     inputs = AlignmentInputs(
         concepts=[
@@ -340,3 +348,34 @@ def test_failed_checkpoint_candidate_is_requeued_on_resume(tmp_path):
     reviews, _events, report = runner.run([candidate], concepts=[concept], relations=[])
     assert reviews[0]["decision"] == "APPROVE"
     assert report["failed_count"] == 0
+
+
+def test_rejected_review_is_remembered_without_becoming_registered(tmp_path):
+    concept = {
+        "concept_id": "noise", "canonical_name": "临时编号", "aliases": [],
+        "definition": "一次性编号。", "evidence_ids": ["u1"],
+    }
+    candidate = {
+        **concept, "candidate_id": "noise", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "临时编号仅用于本次记录。"}],
+    }
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_RejectingFakeClient(),
+    )
+
+    reviews, events, report = runner.run([candidate], concepts=[concept], relations=[])
+    memory = MemorySnapshot.build([concept], [], events)
+
+    assert reviews[0]["decision"] == "REJECT"
+    assert events[0]["status"] == "REJECT"
+    assert "noise" in memory.reviewed_concept_ids
+    assert memory.concepts[0]["registration_status"] == "CANDIDATE"
+    assert build_initial_pending_concepts(
+        AlignmentInputs(
+            concepts=[concept], relations=[], rules=[], context_packages={}, units={},
+        ),
+        memory,
+    ) == []
+    assert report["rejected_count"] == 1
