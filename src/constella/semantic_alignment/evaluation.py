@@ -38,9 +38,9 @@ def artifact_metrics(
         int(row.get("frequency") or 0) for row in object_rows
         if row.get("alignment_status") == AlignmentStatus.MATCHED
     )
-    state_matched_weight = sum(
+    state_bound_weight = sum(
         int(row.get("frequency") or 0) for row in rule_states
-        if row.get("alignment_status") == AlignmentStatus.MATCHED
+        if row.get("subject_binding_status") == AlignmentStatus.MATCHED
     )
     proposed_records = [row for row in [*object_rows, *state_rows] if row.get("proposal_id")]
     quantities = [row for row in state_rows if row.get("quantity")]
@@ -54,7 +54,9 @@ def artifact_metrics(
         "rule_value_count": len(rule_states),
         "derived_state_count": len(state_rows) - len(rule_states),
         "object_status_counts": dict(Counter(str(row.get("alignment_status")) for row in object_rows)),
-        "state_status_counts": dict(Counter(str(row.get("alignment_status")) for row in rule_states)),
+        "state_subject_binding_status_counts": dict(Counter(
+            str(row.get("subject_binding_status")) for row in rule_states
+        )),
         "structure_counts": dict(Counter(str(row.get("structure")) for row in object_rows)),
         "semantic_role_counts": dict(Counter(str(row.get("semantic_role")) for row in state_rows)),
         "object_matched_rate": round(
@@ -62,11 +64,13 @@ def artifact_metrics(
             / len(object_rows), 4,
         ) if object_rows else 0.0,
         "object_weighted_matched_rate": round(object_matched_weight / object_weight, 4) if object_weight else 0.0,
-        "state_matched_rate": round(
-            sum(row.get("alignment_status") == AlignmentStatus.MATCHED for row in rule_states)
+        "state_subject_bound_rate": round(
+            sum(row.get("subject_binding_status") == AlignmentStatus.MATCHED for row in rule_states)
             / len(rule_states), 4,
         ) if rule_states else 0.0,
-        "state_weighted_matched_rate": round(state_matched_weight / state_weight, 4) if state_weight else 0.0,
+        "state_weighted_subject_bound_rate": round(
+            state_bound_weight / state_weight, 4,
+        ) if state_weight else 0.0,
         "quantity_record_count": len(quantities),
         "quantity_conversion_count": len(converted),
         "proposal_count": len(proposal_rows),
@@ -224,16 +228,26 @@ def gold_metrics(
         core_fp += len(predicted_ids - gold_ids)
         core_fn += len(gold_ids - predicted_ids)
         exact_core_hits += predicted_ids == gold_ids
-    state_concept_hits = operator_hits = quantity_hits = 0
+    surface_hits = subject_binding_hits = operator_hits = quantity_hits = qualifier_hits = 0
     for key, gold in gold_states.items():
         predicted = predicted_states.get(key, {})
-        state_concept_hits += predicted.get("state_concept_id") == gold.get("state_concept_id")
+        surface_hits += predicted.get("canonical_surface") == gold.get("canonical_surface")
+        predicted_subjects = {
+            str(row["concept_id"])
+            for row in predicted.get("subject_object_refs") or []
+            if row.get("concept_id")
+        }
+        gold_subjects = {str(value) for value in gold.get("subject_concept_ids") or []}
+        subject_binding_hits += predicted_subjects == gold_subjects
         operator_hits += (
             predicted.get("operator_family") == gold.get("operator_family")
             and (predicted.get("quantity") or {}).get("inclusive")
             == (gold.get("quantity") or {}).get("inclusive")
         )
         quantity_hits += _quantity_equal(predicted.get("quantity"), gold.get("quantity"))
+        qualifier_hits += _canonical_json(predicted.get("qualifiers") or []) == _canonical_json(
+            gold.get("qualifiers") or []
+        )
     return {
         "gold_object_count": len(gold_objects),
         "gold_state_count": len(gold_states),
@@ -246,9 +260,13 @@ def gold_metrics(
         "structure_accuracy": round(structure_hits / len(gold_objects), 4) if gold_objects else 0.0,
         "exact_core_set_accuracy": round(exact_core_hits / len(gold_objects), 4) if gold_objects else 0.0,
         "core_concept": _prf(core_tp, core_fp, core_fn),
-        "state_concept_accuracy": round(state_concept_hits / len(gold_states), 4) if gold_states else 0.0,
+        "state_surface_accuracy": round(surface_hits / len(gold_states), 4) if gold_states else 0.0,
+        "state_subject_binding_accuracy": round(
+            subject_binding_hits / len(gold_states), 4,
+        ) if gold_states else 0.0,
         "operator_boundary_accuracy": round(operator_hits / len(gold_states), 4) if gold_states else 0.0,
         "quantity_accuracy": round(quantity_hits / len(gold_states), 4) if gold_states else 0.0,
+        "qualifier_accuracy": round(qualifier_hits / len(gold_states), 4) if gold_states else 0.0,
     }
 
 
@@ -280,6 +298,10 @@ def _quantity_equal(left: Any, right: Any, *, tolerance: Decimal = Decimal("0.00
             if str(left_value) != str(right_value):
                 return False
     return True
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _prf(tp: int, fp: int, fn: int) -> dict[str, Any]:

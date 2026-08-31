@@ -100,6 +100,15 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
     registered = [
         row for row in memory.concepts
         if row.get("registration_status") == "APPROVED"
+        and str(row.get("type") or "") == "object"
+    ]
+    object_candidates = [
+        row for row in memory.concepts
+        if row.get("registration_status") != "APPROVED"
+        and str(row.get("type") or "") != "state"
+    ]
+    legacy_state_concepts = [
+        row for row in memory.concepts if str(row.get("type") or "") == "state"
     ]
     owners: dict[str, set[str]] = defaultdict(set)
     for row in registered:
@@ -116,8 +125,10 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
 
     registered_ids = {str(row["concept_id"]) for row in registered}
     catalog_ids = {str(row["concept_id"]) for row in memory.concepts}
+    legacy_state_ids = {str(row["concept_id"]) for row in legacy_state_concepts}
     missing_endpoints: list[dict[str, Any]] = []
     deferred_candidate_relations = 0
+    ignored_legacy_state_relations = 0
     hierarchy: dict[str, set[str]] = defaultdict(set)
     related_ids: set[str] = set()
     relation_counts: Counter[str] = Counter()
@@ -125,6 +136,9 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
         child = str(relation.get("child_concept_id") or "")
         parent = str(relation.get("parent_concept_id") or "")
         relation_type = str(relation.get("type") or "")
+        if child in legacy_state_ids or parent in legacy_state_ids:
+            ignored_legacy_state_relations += 1
+            continue
         if relation.get("registration_status") != "APPROVED":
             deferred_candidate_relations += 1
             continue
@@ -153,7 +167,8 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
     return {
         "memory_version": memory.version,
         "registered_concept_count": len(registered),
-        "candidate_concept_count": len(memory.concepts) - len(registered),
+        "candidate_concept_count": len(object_candidates),
+        "legacy_state_concept_count": len(legacy_state_concepts),
         "unique_term_count": len(owners),
         "duplicate_term_collision_count": len(collisions),
         "duplicate_term_collisions": collisions,
@@ -161,6 +176,7 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
         "missing_registered_relation_endpoint_count": len(missing_endpoints),
         "missing_registered_relation_endpoints": missing_endpoints[:20],
         "deferred_candidate_relation_count": deferred_candidate_relations,
+        "ignored_legacy_state_relation_count": ignored_legacy_state_relations,
         "hierarchy_cycle_count": len(hierarchy_cycles),
         "hierarchy_cycles": hierarchy_cycles,
         "registered_concepts_with_relations": len(related_ids),

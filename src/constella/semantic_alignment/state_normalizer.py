@@ -4,9 +4,6 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Any
 
-from .models import AlignmentStatus, ConceptType, MatchMethod, ProposalKind
-from .registry import ConceptRegistry, normalize_text
-
 
 _NUMBER = r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?"
 _KNOWN_UNITS = (
@@ -42,124 +39,33 @@ _OPERATOR_MAP = {
     "等于": ("=", True), "=": ("=", True),
 }
 
-_GENERIC_PATTERNS = {
-    "增加", "增大", "提高", "上升", "降低", "减小", "下降", "变化", "不变",
-    "大", "小", "高", "低", "较大", "较小", "较高", "较低", "很大", "很小", "很高", "很低",
-    "增强", "减弱", "改善", "恶化", "形成", "产生", "存在", "无", "有",
-}
-
 
 class StateNormalizer:
-    """Deterministic surface and quantity normalization with typed registry lookup."""
+    """Deterministic surface and quantity normalization of state expressions.
 
-    def __init__(self, registry: ConceptRegistry, *, proposal_threshold: int = 5) -> None:
-        if proposal_threshold < 1:
-            raise ValueError("proposal_threshold must be at least 1")
-        self.registry = registry
-        self.proposal_threshold = proposal_threshold
+    State concepts are no longer admitted; every state is expressed
+    structurally (canonical_surface + operator_family + quantity + qualifiers)
+    against its subject object, never resolved to a concept.
+    """
 
-    def normalize(
-        self,
-        raw_state: str,
-        *,
-        frequency: int,
-        raw_object: str = "",
-        subject_object_concept_ids: list[str] | None = None,
-        qualifiers: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
+    def normalize(self, raw_state: str) -> dict[str, Any]:
         raw = str(raw_state)
         surface = self._surface(raw)
         quantity_result = self._quantity(surface)
-        lookup_values = [surface]
-        progressive = self._progressive_form(surface)
-        if progressive and normalize_text(progressive) != normalize_text(surface):
-            lookup_values.append(progressive)
-        resolution = self._resolve(lookup_values)
-        canonical_surface = surface
-        if resolution["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW}:
-            concept_id = str(resolution["concept_id"])
-            canonical_surface = str(self.registry.concepts[concept_id].get("canonical_name") or surface)
-        if quantity_result:
-            canonical_surface = quantity_result["canonical_surface"]
-        result_qualifiers = list(qualifiers or [])
+        canonical_surface = (
+            quantity_result["canonical_surface"] if quantity_result else surface
+        )
+        qualifiers: list[dict[str, Any]] = []
         if quantity_result and quantity_result.get("dimension"):
-            dimension = {"dimension": quantity_result["dimension"]}
-            if dimension not in result_qualifiers:
-                result_qualifiers.append(dimension)
-        result = {
+            qualifiers.append({"dimension": quantity_result["dimension"]})
+        return {
             "raw_state": raw,
             "canonical_surface": canonical_surface,
-            "state_concept_id": (
-                resolution.get("concept_id")
-                if resolution["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW}
-                else None
+            "operator_family": (
+                quantity_result["operator_family"] if quantity_result else None
             ),
-            "candidate_concept_id": (
-                resolution.get("concept_id") if resolution["status"] == AlignmentStatus.PROPOSED else None
-            ),
-            "state_candidates": resolution.get("candidates", []),
-            "match_method": resolution.get("match_method", MatchMethod.NONE),
-            "operator_family": quantity_result.get("operator_family") if quantity_result else None,
             "quantity": quantity_result.get("quantity") if quantity_result else None,
-            "qualifiers": result_qualifiers,
-            "alignment_status": resolution["status"],
-            "proposal": None,
-        }
-        if resolution["status"] == AlignmentStatus.TYPE_REVIEW:
-            result["proposal"] = {
-                "proposal_kind": ProposalKind.TYPE_REVIEW,
-                "concept_type": ConceptType.STATE,
-                "concept_id": resolution["concept_id"],
-                "canonical_name": canonical_surface,
-            }
-        elif resolution["status"] == AlignmentStatus.PROPOSED and resolution.get("concept_id"):
-            concept_id = str(resolution["concept_id"])
-            result["proposal"] = {
-                "proposal_kind": ProposalKind.CONCEPT_APPROVAL,
-                "concept_type": ConceptType.STATE,
-                "concept_id": concept_id,
-                "canonical_name": str(self.registry.concepts[concept_id].get("canonical_name") or surface),
-                "raw_object": raw_object,
-            }
-        elif resolution["status"] == AlignmentStatus.EXPRESSION_ONLY and frequency >= self.proposal_threshold:
-            proposal_kind = self._proposal_kind(surface, quantity_result)
-            proposal_name = self._proposal_name(surface, quantity_result)
-            if proposal_name:
-                result["alignment_status"] = AlignmentStatus.PROPOSED
-                result["proposal"] = {
-                    "proposal_kind": proposal_kind,
-                    "concept_type": ConceptType.STATE,
-                    "canonical_name": proposal_name,
-                    "raw_object": raw_object,
-                }
-        return result
-
-    def _resolve(self, values: list[str]) -> dict[str, Any]:
-        ambiguous: list[dict[str, Any]] = []
-        proposed: list[dict[str, Any]] = []
-        for value in values:
-            resolved = self.registry.resolve_exact(value, concept_type=ConceptType.STATE)
-            if resolved["status"] in {AlignmentStatus.MATCHED, AlignmentStatus.TYPE_REVIEW}:
-                return resolved
-            if resolved["status"] == AlignmentStatus.AMBIGUOUS:
-                ambiguous.extend(resolved["candidates"])
-            elif resolved["status"] == AlignmentStatus.PROPOSED:
-                proposed.append(resolved)
-        if ambiguous:
-            unique = {row["id"]: row for row in ambiguous}
-            return {
-                "status": AlignmentStatus.AMBIGUOUS,
-                "concept_id": None,
-                "match_method": MatchMethod.NONE,
-                "candidates": list(unique.values()),
-            }
-        if proposed:
-            return proposed[0]
-        return {
-            "status": AlignmentStatus.EXPRESSION_ONLY,
-            "concept_id": None,
-            "match_method": MatchMethod.NONE,
-            "candidates": [],
+            "qualifiers": qualifiers,
         }
 
     @staticmethod
@@ -169,11 +75,6 @@ class StateNormalizer:
         if len(text) > 2:
             text = re.sub(r"(?:的)?状态$", "", text).strip()
         return text
-
-    @staticmethod
-    def _progressive_form(value: str) -> str | None:
-        match = re.fullmatch(r"正在(.{1,8})", value)
-        return f"{match.group(1)}中" if match else None
 
     def _quantity(self, surface: str) -> dict[str, Any] | None:
         for kind, pattern in (("range", _RANGE), ("compare", _COMPARE), ("scalar", _SCALAR)):
@@ -282,15 +183,3 @@ class StateNormalizer:
             return self._decimal_text(number), unit
         factor, offset, canonical_unit = conversions[unit]
         return self._decimal_text(number * factor + offset), canonical_unit
-
-    @staticmethod
-    def _proposal_kind(surface: str, quantity: dict[str, Any] | None) -> str:
-        if quantity or normalize_text(surface) in {normalize_text(value) for value in _GENERIC_PATTERNS}:
-            return ProposalKind.NORMALIZATION_PATTERN
-        return ProposalKind.STATE_CONCEPT
-
-    @staticmethod
-    def _proposal_name(surface: str, quantity: dict[str, Any] | None) -> str:
-        if quantity:
-            return str(quantity["canonical_surface"])
-        return surface

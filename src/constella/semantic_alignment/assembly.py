@@ -39,7 +39,7 @@ def assemble_semantics(
     # Collect proposal candidates first; apply the support threshold only after
     # cross-record aggregation, so several rare equivalent expressions can
     # jointly unlock a reviewed memory item.
-    normalizer = StateNormalizer(registry, proposal_threshold=1)
+    normalizer = StateNormalizer()
     package_cases = {
         str(case["object_id"]): {**case, "tier": package["tier"]}
         for package in packages
@@ -120,7 +120,7 @@ def assemble_semantics(
                 "concept_id": core.get("concept_id"),
                 "alignment_status": core["alignment_status"],
             }
-            for core in template["core_objects"] if core.get("concept_id")
+            for core in template["core_objects"]
         ]
         output_core_objects: list[dict[str, Any]] = []
         for core in template["core_objects"]:
@@ -155,7 +155,7 @@ def assemble_semantics(
         object_status = str(template["alignment_status"])
         if not template["core_objects"] and object_status == AlignmentStatus.PROPOSED:
             proposal = {
-                "proposal_kind": ProposalKind.NORMALIZATION_PATTERN,
+                "proposal_kind": ProposalKind.OBJECT_CONCEPT,
                 "concept_type": ConceptType.OBJECT,
                 "canonical_name": source["raw_object"],
             }
@@ -187,23 +187,7 @@ def assemble_semantics(
             "interpretation_method": template["interpretation_method"],
             "proposal_id": proposal_id,
         })
-        normalized = normalizer.normalize(
-            source["raw_state"],
-            frequency=int(source["frequency"]),
-            raw_object=source["raw_object"],
-            subject_object_concept_ids=[
-                str(ref["concept_id"]) for ref in subject_refs if ref.get("concept_id")
-            ],
-        )
-        proposal_id = None
-        if normalized.get("proposal"):
-            proposal_id = proposals.add(
-                normalized["proposal"], frequency=int(source["frequency"]),
-                raw_expression=source["raw_state"], source=source,
-                subject_object_concept_ids=[
-                    str(ref["concept_id"]) for ref in subject_refs if ref.get("concept_id")
-                ],
-            )
+        normalized = normalizer.normalize(source["raw_state"])
         state_rows.append({
             "schema_version": SCHEMA_VERSION,
             "record_id": stable_id("state_semantic", {
@@ -216,19 +200,17 @@ def assemble_semantics(
             "normalized_input_state": source["normalized_state"],
             "canonical_surface": normalized["canonical_surface"],
             "subject_object_refs": subject_refs,
-            "state_concept_id": normalized["state_concept_id"],
-            "state_candidates": normalized["state_candidates"],
-            "match_method": normalized["match_method"],
             "operator_family": normalized["operator_family"],
             "quantity": normalized["quantity"],
             "qualifiers": normalized["qualifiers"],
-            "alignment_status": normalized["alignment_status"],
+            "subject_binding_status": combine_alignment_statuses([
+                str(ref["alignment_status"]) for ref in subject_refs
+            ]),
             "frequency": int(source["frequency"]),
             "source_roles": source["roles"],
             "source_rule_ids": source["rule_ids"],
             "context_package_ids": source["context_package_ids"],
             "memory_version": builder.memory.version,
-            "proposal_id": proposal_id,
         })
 
     proposal_rows = _prioritize_proposals(
@@ -249,12 +231,7 @@ def assemble_semantics(
             ])
         elif not row.get("proposal_id"):
             row["alignment_status"] = AlignmentStatus.EXPRESSION_ONLY
-    for row in state_rows:
-        if row.get("proposal_id") and row["proposal_id"] not in allowed_proposal_ids:
-            row["proposal_id"] = None
-            if row["alignment_status"] == AlignmentStatus.PROPOSED:
-                row["alignment_status"] = AlignmentStatus.EXPRESSION_ONLY
-    coverage_rows = _state_coverage(state_rows, registry)
+    coverage_rows = _state_coverage(state_rows)
     report = _assembly_report(
         builder, selected_states, object_rows, state_rows, proposal_rows, coverage_rows, registry,
     )
@@ -387,7 +364,7 @@ def _embedded_state_record(
     if matching_core:
         subject_refs = [
             {"concept_id": core.get("concept_id"), "alignment_status": core["alignment_status"]}
-            for core in matching_core if core.get("concept_id")
+            for core in matching_core
         ]
     else:
         resolved = _resolve_object_component(
@@ -396,25 +373,13 @@ def _embedded_state_record(
         subject_refs = [{
             "concept_id": resolved.get("concept_id"),
             "alignment_status": resolved["alignment_status"],
-        }] if resolved.get("concept_id") else []
+        }]
         if resolved.get("proposal"):
             proposals.add(
                 resolved["proposal"], frequency=int(source["frequency"]),
                 raw_expression=subject_text, source=source, subject_object_concept_ids=[],
             )
-    normalized = normalizer.normalize(
-        str(embedded["state_text"]),
-        frequency=int(source["frequency"]),
-        raw_object=subject_text,
-        subject_object_concept_ids=[str(ref["concept_id"]) for ref in subject_refs],
-    )
-    proposal_id = None
-    if normalized.get("proposal"):
-        proposal_id = proposals.add(
-            normalized["proposal"], frequency=int(source["frequency"]),
-            raw_expression=str(embedded["state_text"]), source=source,
-            subject_object_concept_ids=[str(ref["concept_id"]) for ref in subject_refs],
-        )
+    normalized = normalizer.normalize(str(embedded["state_text"]))
     role = str(embedded["role"])
     return {
         "schema_version": SCHEMA_VERSION,
@@ -432,19 +397,17 @@ def _embedded_state_record(
         "normalized_input_state": None,
         "canonical_surface": normalized["canonical_surface"],
         "subject_object_refs": subject_refs,
-        "state_concept_id": normalized["state_concept_id"],
-        "state_candidates": normalized["state_candidates"],
-        "match_method": normalized["match_method"],
         "operator_family": normalized["operator_family"],
         "quantity": normalized["quantity"],
         "qualifiers": normalized["qualifiers"],
-        "alignment_status": normalized["alignment_status"],
+        "subject_binding_status": combine_alignment_statuses([
+            str(ref["alignment_status"]) for ref in subject_refs
+        ]),
         "frequency": int(source["frequency"]),
         "source_roles": source["roles"],
         "source_rule_ids": source["rule_ids"],
         "context_package_ids": source["context_package_ids"],
         "memory_version": memory_version,
-        "proposal_id": proposal_id,
     }
 
 
@@ -482,6 +445,7 @@ class _ProposalAccumulator:
             "subject_dimension_key": dimension_key,
             "support": 0,
             "raw_expressions": set(),
+            "raw_expression_source_state_ids": defaultdict(set),
             "source_state_ids": set(),
             "source_rule_ids": set(),
             "context_package_ids": set(),
@@ -489,6 +453,7 @@ class _ProposalAccumulator:
         })
         row["support"] += frequency
         row["raw_expressions"].add(raw_expression)
+        row["raw_expression_source_state_ids"][raw_expression].add(source["source_state_id"])
         row["source_state_ids"].add(source["source_state_id"])
         row["source_rule_ids"].update(source["rule_ids"])
         row["context_package_ids"].update(source["context_package_ids"])
@@ -506,6 +471,12 @@ class _ProposalAccumulator:
             result.append({
                 **row,
                 "raw_expressions": sorted(row["raw_expressions"]),
+                "raw_expression_source_state_ids": {
+                    expression: sorted(source_ids)
+                    for expression, source_ids in sorted(
+                        row["raw_expression_source_state_ids"].items()
+                    )
+                },
                 "source_state_ids": sorted(row["source_state_ids"]),
                 "source_rule_ids": sorted(row["source_rule_ids"]),
                 "context_package_ids": sorted(row["context_package_ids"]),
@@ -537,7 +508,7 @@ def _prioritize_proposals(
             priority = "P0"
         elif unlock_count >= 5 or support >= 20:
             priority = "P1"
-        elif kind in {ProposalKind.OBJECT_CONCEPT, ProposalKind.STATE_CONCEPT, ProposalKind.ALIAS}:
+        elif kind in {ProposalKind.OBJECT_CONCEPT, ProposalKind.ALIAS}:
             priority = "P2"
         else:
             priority = "P3"
@@ -550,21 +521,33 @@ def _prioritize_proposals(
     ))
 
 
-def _state_coverage(state_rows: list[dict[str, Any]], registry: ConceptRegistry) -> list[dict[str, Any]]:
+def _state_coverage(state_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group matched states by registered subject object and state expression.
+
+    State concepts were removed; an observation is identified by its structured
+    surface, operator, and qualifiers. Concrete quantities remain observations
+    under that expression instead of becoming concept identity.
+    """
     grouped: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in state_rows:
-        state_id = str(row.get("state_concept_id") or "")
-        if row.get("alignment_status") != AlignmentStatus.MATCHED or state_id not in registry:
+        if row.get("subject_binding_status") != AlignmentStatus.MATCHED:
             continue
         object_ids = [
             str(ref["concept_id"])
             for ref in row.get("subject_object_refs") or []
-            if ref.get("alignment_status") == AlignmentStatus.MATCHED and ref.get("concept_id") in registry
+            if ref.get("alignment_status") == AlignmentStatus.MATCHED and ref.get("concept_id")
         ]
+        expression_key = json.dumps({
+            "canonical_surface": row.get("canonical_surface"),
+            "operator_family": row.get("operator_family"),
+            "qualifiers": row.get("qualifiers"),
+        }, ensure_ascii=False, sort_keys=True)
         for object_id in object_ids:
-            observation = grouped[object_id].setdefault(state_id, {
-                "state_concept_id": state_id,
-                "canonical_name": str(registry.concepts[state_id].get("canonical_name") or ""),
+            observation = grouped[object_id].setdefault(expression_key, {
+                "state_expression": str(
+                    row.get("canonical_surface") or row.get("raw_state") or ""
+                ),
+                "expression_key": expression_key,
                 "support": 0,
                 "source_state_ids": set(),
                 "parameter_observations": Counter(),
@@ -590,7 +573,7 @@ def _state_coverage(state_rows: list[dict[str, Any]], registry: ConceptRegistry)
                     for key, support in observation["parameter_observations"].most_common()
                 ],
             })
-        observations.sort(key=lambda row: (-int(row["support"]), row["state_concept_id"]))
+        observations.sort(key=lambda row: (-int(row["support"]), row["state_expression"]))
         result.append({
             "schema_version": SCHEMA_VERSION,
             "object_concept_id": object_id,
@@ -620,8 +603,6 @@ def _assembly_report(
             if core.get("concept_id") and not registry.is_approved(str(core["concept_id"]))
         )
     for row in state_rows:
-        if row.get("state_concept_id") and not registry.is_approved(str(row["state_concept_id"])):
-            invalid_refs.append(row["state_concept_id"])
         invalid_refs.extend(
             ref.get("concept_id") for ref in row.get("subject_object_refs") or []
             if ref.get("concept_id") and not registry.is_approved(str(ref["concept_id"]))
@@ -642,13 +623,23 @@ def _assembly_report(
         "state_semantic_count": len(state_rows),
         "derived_state_count": len(state_rows) - len(rule_state_rows),
         "object_status_counts": dict(Counter(str(row["alignment_status"]) for row in object_rows)),
-        "state_status_counts": dict(Counter(str(row["alignment_status"]) for row in rule_state_rows)),
+        "state_subject_binding_status_counts": dict(Counter(
+            str(row["subject_binding_status"]) for row in rule_state_rows
+        )),
         "proposal_count": len(proposal_rows),
         "proposal_counts": dict(Counter(str(row["proposal_kind"]) for row in proposal_rows)),
         "coverage_object_count": len(coverage_rows),
         "memory_version": builder.memory.version,
         "registry_concept_count": len(registry.concepts),
-        "registered_concept_count": sum(registry.is_approved(key) for key in registry.concepts),
+        "registered_concept_count": sum(
+            registry.is_approved(key)
+            and str(registry.concepts[key].get("type") or "") == ConceptType.OBJECT
+            for key in registry.concepts
+        ),
+        "legacy_state_concept_count": sum(
+            str(row.get("type") or "") == ConceptType.STATE
+            for row in registry.concepts.values()
+        ),
         "missing_relation_endpoint_count": registry.missing_relation_endpoint_count,
         "concepts_created_by_alignment": 0,
         "invariants": {

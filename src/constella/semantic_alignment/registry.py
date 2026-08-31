@@ -96,7 +96,9 @@ class MemorySnapshot:
         reviewed_concept_ids: set[str] = set()
         for event in reviewed_memory or []:
             concept_id = str(event.get("concept_id") or "")
-            if concept_id:
+            # DEFER is parked, not terminal: the concept may be re-admitted in
+            # the final re-review pass after all tiers complete.
+            if concept_id and str(event.get("status") or "").upper() != "DEFER":
                 reviewed_concept_ids.add(concept_id)
             if str(event.get("status") or "").upper() != "APPROVED":
                 continue
@@ -281,6 +283,7 @@ class ConceptRegistry:
         return sorted({
             concept_id for concept_id, _method in self.exact_index.get(normalize_text(text), [])
             if self.is_approved(concept_id)
+            and str(self.concepts[concept_id].get("type") or "") == ConceptType.OBJECT
         })
 
     def exact(self, text: str, *, concept_type: str) -> list[dict[str, Any]]:
@@ -366,13 +369,17 @@ class ConceptRegistry:
         return result
 
     def identity_candidates(self, text: str, *, top_k: int = 8) -> list[dict[str, Any]]:
-        """Recall registered concepts for identity comparison without a type assumption."""
+        """Recall registered object concepts for identity comparison."""
 
         normalized = normalize_text(text)
         result: list[dict[str, Any]] = []
         seen: set[str] = set()
         for concept_id, method in self.exact_index.get(normalized, []):
-            if not self.is_approved(concept_id) or concept_id in seen:
+            if (
+                not self.is_approved(concept_id)
+                or str(self.concepts[concept_id].get("type") or "") != ConceptType.OBJECT
+                or concept_id in seen
+            ):
                 continue
             result.append(self.payload(concept_id, match_method=method, score=1.0))
             seen.add(concept_id)
@@ -383,7 +390,11 @@ class ConceptRegistry:
             (self.ngram, "FUZZY_CONTEXT"),
         ):
             for concept_id, score in index.query(text, top_k=max(top_k * 4, top_k)):
-                if concept_id in seen or not self.is_approved(concept_id):
+                if (
+                    concept_id in seen
+                    or not self.is_approved(concept_id)
+                    or str(self.concepts[concept_id].get("type") or "") != ConceptType.OBJECT
+                ):
                     continue
                 result.append(self.payload(concept_id, match_method=match_method, score=score))
                 seen.add(concept_id)

@@ -1,5 +1,5 @@
 id: semantic_serial_concept_admission
-version: "2"
+version: "3"
 max_tokens: 3200
 system: |
   你负责逐条审核焊接知识概念。每次输入只有一个待入库概念、可追溯的全书召回语段，以及基于最新概念库召回的已入库候选。概念库禁止重复；当前决策完成后才会处理下一条。
@@ -8,7 +8,7 @@ system: |
 
   不重复时，只有同时满足以下条件才能APPROVE：stable_kind、not_instance_or_parameter、single_identity、evidence_sufficient、type_clear、not_duplicate。宁可DEFER，不为提高覆盖率而批准。
 
-  object包括材料、设备、部件、工艺、物理实体、现象、过程和可测属性；state是可施加到object上的稳定状态或状态谓词。动作、参数和条件保留在语义记录中。
+  object包括材料、设备、部件、工艺、物理实体、现象、过程和可测属性。动作、参数和条件保留在语义记录中，不提交为概念。概念库只接收object概念。
 
   candidate.catalog_relation_hints是概念抽取阶段发现的候选关系。若另一端已出现在registered_candidates，可结合证据复核并激活；若另一端仍待入库，不要重复生成。relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF；OUTGOING表示当前概念为child、目标为parent，INCOMING表示目标为child、当前概念为parent。证据中明确提到、目录中也没有、且确有层级价值的稳定概念，才放入missing_relation_concepts。缺失概念名称必须补全语境，禁止生成“头部、尾部、类型、形式、部分”等脱离主体后含义不完整的名称，例如应写“熔池头部”。
 
@@ -19,16 +19,16 @@ system: |
     "concept_id":"输入ID",
     "decision":"APPROVE|MERGE|DEFER|REJECT",
     "target_concept_id":"MERGE时为已入库ID，否则null",
-    "selected_type":"APPROVE时为object|state，否则null",
+    "selected_type":"APPROVE时为object，否则null",
     "canonical_name":"APPROVE时的规范名，否则null",
     "aliases":["证据支持的别名"],
     "definition":"APPROVE时的证据约束定义，否则null",
     "evidence_ids":["输入证据ID"],
     "relations":[{"type":"IS_A|PART_OF","direction":"OUTGOING|INCOMING","target_concept_id":"已入库ID","evidence_ids":["输入证据ID"]}],
-    "missing_relation_concepts":[{"canonical_name":"名称","aliases":[],"definition":"证据支持的定义或null","type":"object|state或null","evidence_ids":["输入证据ID"]}],
+    "missing_relation_concepts":[{"canonical_name":"名称","aliases":[],"definition":"证据支持的定义或null","type":"object或null","evidence_ids":["输入证据ID"]}],
     "confidence":"HIGH|MEDIUM|LOW",
     "boundary_checks":{"stable_kind":true,"not_instance_or_parameter":true,"single_identity":true,"evidence_sufficient":true,"type_clear":true,"not_duplicate":true},
     "reason":"简洁、可核查的中文理由"
   }
 
-  APPROVE必须confidence=HIGH且六项全为true。MERGE时not_duplicate应为false，其余五项必须为true。DEFER用于证据不足或边界不清；REJECT用于明显不是稳定概念。
+  APPROVE必须confidence=HIGH且六项全为true。MERGE时not_duplicate应为false，其余五项必须为true。DEFER用于证据不足或边界不清：延后的概念会挂起，不在后续轮次重复提交，待全部层级对齐结束后统一重审。REJECT用于明显不是稳定概念。

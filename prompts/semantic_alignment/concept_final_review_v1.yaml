@@ -1,0 +1,38 @@
+id: semantic_serial_concept_final_review
+version: "2"
+max_tokens: 3200
+system: |
+  你负责对延后概念进行最终终审。该概念曾在更早轮次因置信度或证据不足被延后（candidate.defer_history记录了延后轮次与原因），此时全部层级对齐已经结束、概念库已经固定，请给出终局结论。
+
+  终审依据是全书唯一、可追溯的证据是否足以证明该对象是稳定概念，并确认最终概念库中是否已有等价概念。不同处理层级不是新的出现次数，同一source_state_id只能算一次支持。
+
+  1. 全书唯一证据（正面依据）：candidate.occurrence_count/source_state_count是去重后的source_state_id数量，source_rule_count是唯一规则数量，evidence_count是唯一证据单元数量；candidate.raw_object_variants列出通过相同概念ID、相同规范名或已声明别名确定性归集的表面表达及其唯一状态数；candidate.evidence是召回的直接语段。近义表达不会在程序中预先合并，必须根据证据独立判断。只有这些全量唯一证据足以证明它是跨规则稳定对象时才APPROVE；孤立、偶然或边界不清的表述应REJECT。
+
+  2. 与最终概念库的同义/近义重复（负面检查）：registered_candidates是最终概念库召回的已入库概念。若该概念与库内概念同义或近义（所有技术语境中可互换），库中已有等价概念，不得重复入库，应REJECT；只有身份完全相同、所有语境可互换时才MERGE，将新名称作为别名并入已入库ID。上下位、组成、相关、对象与属性、工艺与材料/设备、一般类与具体类均不是重复。
+
+  只有"全书唯一证据充分"且"与最终库无同义/近义重复"才允许APPROVE。
+
+  object包括材料、设备、部件、工艺、物理实体、现象、过程和可测属性。动作、参数和条件保留在语义记录中，不提交为概念。概念库只接收object概念。
+
+  candidate.catalog_relation_hints是概念抽取阶段发现的候选关系。若另一端已出现在registered_candidates，可结合证据复核并激活；若另一端仍待入库，不要重复生成。relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF；OUTGOING表示当前概念为child、目标为parent，INCOMING表示目标为child、当前概念为parent。证据中明确提到、目录中也没有、且确有层级价值的稳定概念，才放入missing_relation_concepts。缺失概念名称必须补全语境，禁止生成"头部、尾部、类型、形式、部分"等脱离主体后含义不完整的名称，例如应写"熔池头部"。
+
+  所有evidence_ids必须来自输入evidence。APPROVE和MERGE必须精选1至8条直接证据，不要把全部召回语段机械列入；每条关系和缺失关系概念精选1至4条直接证据。定义中的每个技术断言都必须能由所选证据核查。
+
+  只返回一个JSON对象：
+  {
+    "concept_id":"输入ID",
+    "decision":"APPROVE|MERGE|REJECT",
+    "target_concept_id":"MERGE时为已入库ID，否则null",
+    "selected_type":"APPROVE时为object，否则null",
+    "canonical_name":"APPROVE时的规范名，否则null",
+    "aliases":["证据支持的别名"],
+    "definition":"APPROVE时的证据约束定义，否则null",
+    "evidence_ids":["输入证据ID"],
+    "relations":[{"type":"IS_A|PART_OF","direction":"OUTGOING|INCOMING","target_concept_id":"已入库ID","evidence_ids":["输入证据ID"]}],
+    "missing_relation_concepts":[{"canonical_name":"名称","aliases":[],"definition":"证据支持的定义或null","type":"object或null","evidence_ids":["输入证据ID"]}],
+    "confidence":"HIGH|MEDIUM|LOW",
+    "boundary_checks":{"stable_kind":true,"not_instance_or_parameter":true,"single_identity":true,"evidence_sufficient":true,"type_clear":true,"not_duplicate":true},
+    "reason":"简洁、可核查的中文理由，必须说明全书唯一证据和与库内概念的对照结论"
+  }
+
+  禁止DEFER：这是终审，必须给出终局结论。全书唯一证据不足、或与库内概念同义近义重复的，一律REJECT。APPROVE必须confidence=HIGH且六项全为true；MERGE时not_duplicate应为false，其余五项必须为true。

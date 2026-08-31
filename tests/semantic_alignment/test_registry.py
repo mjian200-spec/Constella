@@ -124,3 +124,13 @@ def test_unregistered_concepts_do_not_enter_object_candidate_or_coverage_indexes
 
     assert registry.candidates("电弧", concept_type="object") == []
     assert registry.lexical_coverage("电弧", concept_type="object") == 0.0
+
+
+def test_legacy_state_concepts_do_not_enter_object_identity_checks():
+    registry = ConceptRegistry(MemorySnapshot.build([{
+        "concept_id": "legacy_hot", "canonical_name": "过热", "aliases": ["高温"],
+        "type": "state", "registration_status": "APPROVED",
+    }], []))
+
+    assert registry.registered_term_owners("过热") == []
+    assert registry.identity_candidates("过热") == []

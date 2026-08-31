@@ -88,3 +88,26 @@ def test_library_audit_defers_relations_until_both_concepts_are_registered():
     assert report["deferred_candidate_relation_count"] == 1
     assert report["missing_registered_relation_endpoint_count"] == 0
     assert all(report["invariants"].values())
+
+
+def test_library_audit_separates_legacy_state_concepts_from_object_library():
+    memory = MemorySnapshot.build([
+        {
+            "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+            "type": "object", "registration_status": "APPROVED",
+        },
+        {
+            "concept_id": "hot", "canonical_name": "过热", "aliases": [],
+            "type": "state", "registration_status": "APPROVED",
+        },
+    ], [{
+        "relation_id": "legacy", "child_concept_id": "hot",
+        "parent_concept_id": "arc", "type": "IS_A", "registration_status": "APPROVED",
+    }])
+
+    report = audit_concept_library(memory)
+
+    assert report["registered_concept_count"] == 1
+    assert report["legacy_state_concept_count"] == 1
+    assert report["ignored_legacy_state_relation_count"] == 1
+    assert all(report["invariants"].values())

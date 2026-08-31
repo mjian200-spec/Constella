@@ -115,6 +115,30 @@ class _RejectingFakeClient:
         return {"model": "fake-model", "choices": [{"message": {"content": json.dumps(output)}}]}
 
 
+class _DeferringFakeClient:
+    def complete(self, _model_key, messages, **_kwargs):
+        package = json.loads(messages[1]["content"])
+        output = _decision(package["candidate"])
+        output.update({"decision": "DEFER", "selected_type": None})
+        return {"model": "fake-model", "choices": [{"message": {"content": json.dumps(output)}}]}
+
+
+class _MediumFakeClient:
+    def complete(self, _model_key, messages, **_kwargs):
+        package = json.loads(messages[1]["content"])
+        output = _decision(package["candidate"])
+        output.update({"confidence": "MEDIUM"})
+        return {"model": "fake-model", "choices": [{"message": {"content": json.dumps(output)}}]}
+
+
+class _UnderevidencedFakeClient:
+    def complete(self, _model_key, messages, **_kwargs):
+        package = json.loads(messages[1]["content"])
+        output = _decision(package["candidate"])
+        output["boundary_checks"]["evidence_sufficient"] = False
+        return {"model": "fake-model", "choices": [{"message": {"content": json.dumps(output)}}]}
+
+
 def test_initial_candidates_include_zero_occurrence_extracted_concepts():
     inputs = AlignmentInputs(
         concepts=[
@@ -172,7 +196,8 @@ def test_alignment_proposals_become_ranked_evidence_bound_candidates():
     proposals = [{
         "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
         "canonical_name": "脉冲持续时间", "support": 9,
-        "source_state_ids": ["s1"], "context_package_ids": ["p1"],
+        "source_state_ids": [f"s{index}" for index in range(9)],
+        "context_package_ids": ["p1"],
         "raw_expressions": ["脉冲持续时间"],
     }]
 
@@ -187,13 +212,34 @@ def test_alignment_proposals_become_ranked_evidence_bound_candidates():
     assert rows[0]["evidence"][0]["text"] == "脉冲持续时间决定热输入。"
 
 
+def test_alignment_candidate_counts_unique_source_states_across_repeated_proposals():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[], context_packages={}, units={},
+    )
+    proposal = {
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
+        "canonical_name": "电弧", "support": 20,
+        "source_state_ids": ["s1"], "source_rule_ids": ["r1"],
+        "raw_expressions": ["电弧"],
+        "raw_expression_source_state_ids": {"电弧": ["s1"]},
+    }
+
+    rows = build_pending_concepts_from_proposals(
+        [proposal, proposal], inputs, MemorySnapshot.build([], []),
+    )
+
+    assert rows[0]["occurrence_count"] == 1
+    assert rows[0]["source_rule_count"] == 1
+    assert rows[0]["raw_object_variants"] == [{"text": "电弧", "count": 1}]
+
+
 def test_state_and_action_proposals_do_not_enter_object_concept_admission():
     inputs = AlignmentInputs(
         concepts=[], relations=[], rules=[], context_packages={}, units={},
     )
 
     rows = build_pending_concepts_from_proposals([{
-        "proposal_kind": "STATE_CONCEPT", "concept_type": "state",
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "state",
         "canonical_name": "升高", "support": 100,
     }], inputs, MemorySnapshot.build([], []))
 
@@ -378,4 +424,290 @@ def test_rejected_review_is_remembered_without_becoming_registered(tmp_path):
         ),
         memory,
     ) == []
+    assert report["rejected_count"] == 1
+
+
+def test_initial_candidates_skip_state_type_concepts():
+    inputs = AlignmentInputs(
+        concepts=[
+            {"concept_id": "arc", "canonical_name": "电弧", "aliases": [], "type": "object"},
+            {"concept_id": "increase", "canonical_name": "增大", "aliases": [], "type": "state"},
+        ],
+        relations=[], rules=[], context_packages={}, units={},
+    )
+
+    rows = build_initial_pending_concepts(
+        inputs, MemorySnapshot.build(inputs.concepts, inputs.relations),
+    )
+
+    assert [row["concept_id"] for row in rows] == ["arc"]
+
+
+def test_defer_is_parked_and_not_terminal(tmp_path):
+    concept = {
+        "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+        "definition": "气体放电现象。", "evidence_ids": ["u1"], "type": "object",
+    }
+    candidate = {
+        **concept, "candidate_id": "arc", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "电弧是气体放电现象。"}],
+    }
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_DeferringFakeClient(),
+    )
+
+    reviews, events, report = runner.run([candidate], concepts=[concept], relations=[])
+    memory = MemorySnapshot.build([concept], [], events)
+
+    assert reviews[0]["decision"] == "DEFER"
+    assert reviews[0]["status"] == "DEFER"
+    assert reviews[0]["gate_reason"] == "model_defer"
+    assert events[0]["status"] == "DEFER"
+    assert "arc" not in memory.reviewed_concept_ids
+    assert report["deferred_count"] == 1
+
+
+def test_final_rereview_converts_defer_to_reject(tmp_path):
+    concept = {
+        "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+        "definition": "气体放电现象。", "evidence_ids": ["u1"], "type": "object",
+    }
+    candidate = {
+        **concept, "candidate_id": "arc", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "电弧是气体放电现象。"}],
+        "defer_history": [{"cycle": 0, "decision": "DEFER", "reason": "证据不足"}],
+    }
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_DeferringFakeClient(), allow_defer=False,
+    )
+
+    reviews, events, report = runner.run([candidate], concepts=[concept], relations=[])
+    memory = MemorySnapshot.build([concept], [], events)
+
+    assert reviews[0]["decision"] == "REJECT"
+    assert reviews[0]["status"] == "REJECT"
+    assert reviews[0]["gate_reason"] == "re_review_does_not_allow_defer"
+    assert events[0]["status"] == "REJECT"
+    assert "arc" in memory.reviewed_concept_ids
+    assert report["deferred_count"] == 0
+    assert report["rejected_count"] == 1
+
+
+def test_initial_candidates_skip_registered_duplicate_names_but_not_definition_substrings():
+    inputs = AlignmentInputs(
+        concepts=[
+            {
+                "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+                "type": "object", "definition": "气体放电现象。",
+                "registration_status": "APPROVED",
+            },
+            {
+                "concept_id": "arc_light", "canonical_name": "弧光", "aliases": [],
+                "type": "object", "definition": "焊接中电弧的气体放电现象。",
+                "registration_status": "CANDIDATE",
+            },
+            {
+                "concept_id": "same_name", "canonical_name": "电弧", "aliases": ["火弧"],
+                "type": "object", "definition": "另一个电弧。",
+                "registration_status": "CANDIDATE",
+            },
+        ],
+        relations=[], rules=[], context_packages={}, units={},
+    )
+
+    rows = build_initial_pending_concepts(
+        inputs, MemorySnapshot.build(inputs.concepts, inputs.relations),
+    )
+
+    assert [row["concept_id"] for row in rows] == ["arc_light"]
+
+
+def test_pending_proposals_are_blocked_by_terminal_names():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[], context_packages={}, units={},
+    )
+    proposals = [{
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
+        "canonical_name": "异种材料接头", "support": 9,
+        "source_state_ids": ["s1"], "context_package_ids": ["p1"],
+        "raw_expressions": ["异种材料接头"],
+    }]
+
+    rows = build_pending_concepts_from_proposals(
+        proposals, inputs, MemorySnapshot.build([], []),
+        blocked_names={"异种材料接头"},
+    )
+
+    assert rows == []
+
+
+def test_pending_proposals_skip_names_owned_by_registered_concepts():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[], context_packages={}, units={},
+    )
+    proposals = [{
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
+        "canonical_name": "异种材料接头", "support": 9,
+        "source_state_ids": ["s1"], "context_package_ids": ["p1"],
+        "raw_expressions": ["异种材料接头"],
+    }]
+    memory = MemorySnapshot.build([{
+        "concept_id": "c_joint", "canonical_name": "异种材料接头", "aliases": [],
+        "registration_status": "APPROVED",
+    }], [], [])
+
+    rows = build_pending_concepts_from_proposals(proposals, inputs, memory)
+
+    assert rows == []
+
+
+def test_unresolved_object_proposals_are_admitted_as_object_concepts():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[], context_packages={}, units={},
+    )
+    proposals = [{
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
+        "canonical_name": "熔池", "support": 9,
+        "source_state_ids": [f"s{index}" for index in range(9)],
+        "context_package_ids": ["p1"],
+        "raw_expressions": ["熔池"],
+    }]
+
+    rows = build_pending_concepts_from_proposals(
+        proposals, inputs, MemorySnapshot.build([], []),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["canonical_name"] == "熔池"
+    assert rows[0]["occurrence_count"] == 9
+    assert rows[0]["candidate_origin"] == "UNPROCESSED_OBJECT"
+
+
+def test_unresolved_object_proposals_respect_blocked_names():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[], context_packages={}, units={},
+    )
+    proposals = [{
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
+        "canonical_name": "熔池", "support": 9,
+        "source_state_ids": ["s1"], "context_package_ids": ["p1"],
+        "raw_expressions": ["熔池"],
+    }]
+
+    rows = build_pending_concepts_from_proposals(
+        proposals, inputs, MemorySnapshot.build([], []),
+        blocked_names={"熔池"},
+    )
+
+    assert rows == []
+
+
+def test_unresolved_object_candidate_definition_grounded_in_rule_context():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[{
+            "id": "r1",
+            "raw_expression": "熔池温度过高时，应降低焊接电流。",
+            "conditions": [{
+                "id": "s1", "object": "熔池",
+                "raw_state": "温度过高", "normalized_state": "温度过高",
+            }],
+            "antecedents": [], "consequents": [],
+        }], context_packages={}, units={},
+    )
+    proposals = [{
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
+        "canonical_name": "熔池", "support": 9,
+        "source_state_ids": ["s1"], "context_package_ids": ["p1"],
+        "raw_expressions": ["熔池"],
+    }]
+
+    rows = build_pending_concepts_from_proposals(
+        proposals, inputs, MemorySnapshot.build([], []),
+    )
+
+    assert rows[0]["definition"] is not None
+    assert "熔池" in rows[0]["definition"]
+    assert "温度过高" in rows[0]["definition"]
+    assert "应降低焊接电流" in rows[0]["definition"]
+
+
+def test_low_confidence_approval_is_deferred_not_terminal(tmp_path):
+    concept = {
+        "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+        "definition": "气体放电现象。", "evidence_ids": ["u1"], "type": "object",
+    }
+    candidate = {
+        **concept, "candidate_id": "arc", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "电弧是气体放电现象。"}],
+    }
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_MediumFakeClient(),
+    )
+
+    reviews, events, report = runner.run([candidate], concepts=[concept], relations=[])
+    memory = MemorySnapshot.build([concept], [], events)
+
+    assert reviews[0]["decision"] == "APPROVE"
+    assert reviews[0]["status"] == "DEFER"
+    assert reviews[0]["gate_reason"] == "admission_requires_high_model_confidence"
+    assert events[0]["status"] == "DEFER"
+    assert "arc" not in memory.reviewed_concept_ids
+    assert report["deferred_count"] == 1
+
+
+def test_evidence_reuse_insufficient_approval_is_deferred(tmp_path):
+    concept = {
+        "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+        "definition": "气体放电现象。", "evidence_ids": ["u1"], "type": "object",
+    }
+    candidate = {
+        **concept, "candidate_id": "arc", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "电弧是气体放电现象。"}],
+    }
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_UnderevidencedFakeClient(),
+    )
+
+    reviews, events, report = runner.run([candidate], concepts=[concept], relations=[])
+    memory = MemorySnapshot.build([concept], [], events)
+
+    assert reviews[0]["decision"] == "APPROVE"
+    assert reviews[0]["status"] == "DEFER"
+    assert reviews[0]["gate_reason"] == "approval_requires_more_evidence_reuse"
+    assert events[0]["status"] == "DEFER"
+    assert "arc" not in memory.reviewed_concept_ids
+    assert report["deferred_count"] == 1
+
+
+def test_low_confidence_approval_is_rejected_in_final_rereview(tmp_path):
+    concept = {
+        "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
+        "definition": "气体放电现象。", "evidence_ids": ["u1"], "type": "object",
+    }
+    candidate = {
+        **concept, "candidate_id": "arc", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "电弧是气体放电现象。"}],
+    }
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_MediumFakeClient(), allow_defer=False,
+    )
+
+    reviews, events, report = runner.run([candidate], concepts=[concept], relations=[])
+    memory = MemorySnapshot.build([concept], [], events)
+
+    assert reviews[0]["decision"] == "APPROVE"
+    assert reviews[0]["status"] == "REJECT"
+    assert events[0]["status"] == "REJECT"
+    assert "arc" in memory.reviewed_concept_ids
+    assert report["deferred_count"] == 0
     assert report["rejected_count"] == 1

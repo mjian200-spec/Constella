@@ -53,10 +53,10 @@ def test_type_candidates_collapse_dimensions_keep_conflicts_and_rank_by_occurren
     rows = build_concept_admission_candidates(proposals, _memory(), min_support=5)
     assert len(rows) == 1
     assert rows[0]["concept_id"] == "arc"
-    assert rows[0]["suggested_types"] == ["object", "state"]
-    assert rows[0]["support_by_type"] == {"object": 20, "state": 6}
-    assert rows[0]["source_state_count"] == 3
-    assert rows[0]["occurrence_count"] == 20
+    assert rows[0]["suggested_types"] == ["object"]
+    assert rows[0]["support_by_type"] == {"object": 20}
+    assert rows[0]["source_state_count"] == 2
+    assert rows[0]["occurrence_count"] == 2
     assert rows[0]["occurrence_rank"] == 1
     assert rows[0]["rank_confidence"] == "HIGH"
 

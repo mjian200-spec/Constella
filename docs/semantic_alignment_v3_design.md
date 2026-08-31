@@ -1,4 +1,6 @@
-# Semantic Alignment v2：数据状态与递进记忆规范
+# Semantic Alignment v3：对象概念与结构化状态规范
+
+正式产物的`schema_version`为`semantic_alignment.v3`。
 
 ## 1. 模块边界
 
@@ -6,7 +8,7 @@
 
 `outputs/article_concepts_full_20260829`中的720个条目都是文章模型发现的`CANDIDATE`，不是审核通过概念。它们只参与召回和自动准入判断。只有完整概念身份与类型同时通过准入门、以`registration_status=APPROVED`写入版本化记忆后，才属于正式注册中心，才允许产生`MATCHED`和画像。
 
-概念只保存跨规则稳定的种类身份：`concept_id`、名称、别名、`object|state`类型、定义、`IS_A|PART_OF|SAME_AS`和证据指针。原文、参数、条件和限定保存在语义记录。
+概念只保存跨规则稳定的对象种类身份：`concept_id`、名称、别名、`object`类型、定义、`IS_A|PART_OF`和证据指针。状态值、状态谓词、原文、参数、条件和限定保存在结构化语义记录，不注册为概念。旧产物中的`type=state`仅作为兼容数据识别，不进入正式对象概念库。
 
 ## 2. 正交状态
 
@@ -56,8 +58,9 @@ semantic_role: RULE_CONDITION
 raw_object: 温度
 raw_state: 超过60°C
 canonical_surface: 温度>{quantity}
-subject_object_concept_ids: [concept_temperature]
-state_concept_id: null
+subject_object_refs:
+  - concept_id: concept_temperature
+    alignment_status: MATCHED
 operator_family: ">"
 quantity:
   value: "333.15"
@@ -67,7 +70,7 @@ quantity:
   inclusive: false
 qualifiers:
   - dimension: 温度
-alignment_status: EXPRESSION_ONLY
+subject_binding_status: MATCHED
 source_rule_ids: []
 ```
 
@@ -78,13 +81,11 @@ source_rule_ids: []
 提案独立落盘，类型为：
 
 - `OBJECT_CONCEPT`
-- `STATE_CONCEPT`
 - `CONCEPT_APPROVAL`
-- `NORMALIZATION_PATTERN`
 - `ALIAS`
 - `TYPE_REVIEW`
 
-数值、比较算子和“增加、降低、高、较大”等变化/程度表达不能直接成为概念，进入`NORMALIZATION_PATTERN`。提案在形态归一、参数剥离、类型判定和同对象维度聚合之后再计算support。
+未解析对象直接产生`OBJECT_CONCEPT`。数值、比较算子和“增加、降低、高、较大”等变化/程度表达只保留在状态语义记录，不产生概念提案。提案的support用于排序与审计；概念出现次数按唯一`source_state_id`计算，不能因同一证据经过多个处理层级而重复增加。
 
 ## 6. 置信度分级
 
@@ -115,16 +116,17 @@ package不得混合置信等级。package优先级为：置信等级、结构复
 
 ## 9. 自动递进运行方法
 
-单次对齐默认只运行到`H1`。自动循环使用已有全量结果收集第一批候选，然后执行“准入→冻结记忆→H3全量重跑→再次准入”，直到没有新批准或达到epoch上限：
+单次对齐默认只运行到`H1`。自动循环按“初始目录准入→H1/H2/H3逐层对齐与准入→延后候选终审”运行；每层冻结使用最新对象概念库：
 
 ```bash
 # 只构建索引、分级和package，不调用模型
 python scripts/align_semantics.py --dry-run
 
 python scripts/run_semantic_alignment_loop.py \
-  --seed-artifact-dir outputs/semantic_alignment_content_v2_full_20260830 \
-  --output-dir outputs/semantic_alignment_auto_loop_20260831 \
-  --max-epochs 2
+  --output-dir outputs/semantic_alignment_lifecycle \
+  --rule-output-dir outputs/rule_extraction_full_20260829 \
+  --concept-output-dir outputs/article_concepts_full_20260829 \
+  --context-output-dir outputs/context_builder_semantic_qwen38_27b_20260829
 ```
 
 自动准入写入的是完整概念事件，而不是给720个候选批量补类型：
@@ -133,9 +135,9 @@ python scripts/run_semantic_alignment_loop.py \
 {"status":"APPROVED","proposal_kind":"CONCEPT_APPROVAL","approval_mode":"MODEL_GATE","concept":{"concept_id":"concept_xxx","canonical_name":"电弧","aliases":[],"definition":"...","type":"object","registration_status":"APPROVED","evidence_ids":["unit_x"]}}
 ```
 
-加载记忆后会生成新的`memory_version`，旧package缓存不会被误用；尚未完成的对象按新注册中心重新计算置信度和package。准入决策、未批准原因、Prompt、模型、基础记忆版本和每轮指标均独立落盘。新概念提案暂不自动创建，因为当前语义提案还没有绑定到足够的原始证据单元；它们继续进入下一轮候选收集，不污染正式注册中心。
+加载记忆后会生成新的`memory_version`，旧package缓存不会被误用；尚未完成的对象按新注册中心重新计算置信度和package。准入决策、未批准原因、Prompt、模型、基础记忆版本和每轮指标均独立落盘。延后候选在终审时使用全书唯一`source_state_id`、规则和证据单元；相同概念ID、相同规范名或已声明别名可以确定性合并证据，近义表达只由终审模型比较，不预先聚类。
 
-提案带`support`、`unlock_count`和`review_priority=P0..P3`。候选准入以及同时具有高support和高解锁价值的概念最先处理；变化词和数量模式默认位于低优先级，不能直接晋升为概念。
+提案带`support`、`unlock_count`和`review_priority=P0..P3`。候选准入以及同时具有高support和高解锁价值的对象概念最先处理；状态表达不进入概念晋升。
 
 ## 10. 评价指标
 
@@ -143,7 +145,7 @@ python scripts/run_semantic_alignment_loop.py \
 
 | 层级 | 主指标 | 用途 |
 | --- | --- | --- |
-| 人工金标准 | 对象结构准确率、核心概念Precision/Recall/F1及集合全对率、状态概念准确率、算子边界准确率、规范量值准确率 | 判断语义是否正确，是发布门禁 |
+| 人工金标准 | 对象结构准确率、核心概念Precision/Recall/F1及集合全对率、状态规范表面准确率、主语绑定准确率、算子边界准确率、规范量值准确率、限定准确率 | 判断语义是否正确，是发布门禁 |
 | 候选检索 | candidate recall、按源频率加权candidate recall、分H0-H3召回 | 判断正确概念是否进入LLM候选集 |
 | 运行协议 | package成功率、decision覆盖率、缓存命中率、失败数 | 判断输出是否完整可恢复 |
 | 成本与审核 | package数、输入字符总量及P95、匹配率、提案压缩率、记忆后的tier晋升率和机械处理增量 | 优化调用成本和人工审核收益 |
@@ -154,7 +156,7 @@ python scripts/run_semantic_alignment_loop.py \
 
 ```json
 {"record_type":"object","source_state_id":"state_1","structure":"COMPOSED","core_concept_ids":["battery"]}
-{"record_type":"state","source_state_id":"state_1","semantic_role":"RULE_CONDITION","raw_object":"温度","raw_state":"超过60°C","state_concept_id":"overheat","operator_family":">","quantity":{"value":"333.15","unit_canonical":"K","inclusive":false}}
+{"record_type":"state","source_state_id":"state_1","semantic_role":"RULE_CONDITION","raw_object":"温度","raw_state":"超过60°C","canonical_surface":"温度>{quantity}","subject_concept_ids":["temperature"],"operator_family":">","quantity":{"value":"333.15","unit_canonical":"K","inclusive":false},"qualifiers":[{"dimension":"温度"}]}
 ```
 
 缺失预测按错误计入准确率，同时单独报告record coverage，防止通过少输出获得虚高分。数值比较在统一单位后使用`1e-6`绝对容差。

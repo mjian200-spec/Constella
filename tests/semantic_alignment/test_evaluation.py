@@ -39,10 +39,10 @@ def test_artifact_metrics_use_frequency_and_compress_proposals():
     report = artifact_metrics(
         [{"frequency": 3, "alignment_status": "MATCHED", "structure": "ATOMIC"}],
         [
-            {"frequency": 2, "semantic_role": "RULE_VALUE", "alignment_status": "MATCHED"},
+            {"frequency": 2, "semantic_role": "RULE_VALUE", "subject_binding_status": "MATCHED"},
             {"frequency": 1, "semantic_role": "RULE_CONDITION", "proposal_id": "p1"},
         ],
-        [{"proposal_kind": "STATE_CONCEPT", "review_priority": "P1"}],
+        [{"proposal_kind": "OBJECT_CONCEPT", "review_priority": "P1"}],
         [{"observations": [{}, {}]}],
     )
     assert report["object_weighted_matched_rate"] == 1.0
@@ -84,7 +84,9 @@ def test_gold_metrics_score_structure_core_state_and_quantity():
     }]
     state_rows = [{
         "source_state_id": "s1", "semantic_role": "RULE_VALUE", "raw_object": "电流",
-        "raw_state": "大于60A", "state_concept_id": "high", "operator_family": ">",
+        "raw_state": "大于60A", "canonical_surface": "电流>{quantity}",
+        "subject_object_refs": [{"concept_id": "current", "alignment_status": "MATCHED"}],
+        "operator_family": ">", "qualifiers": [{"dimension": "电流"}],
         "quantity": {"value": "60", "unit_canonical": "A", "inclusive": False},
     }]
     gold = [
@@ -94,14 +96,17 @@ def test_gold_metrics_score_structure_core_state_and_quantity():
         },
         {
             "record_type": "state", "source_state_id": "s1", "semantic_role": "RULE_VALUE",
-            "raw_object": "电流", "raw_state": "大于60A", "state_concept_id": "high",
-            "operator_family": ">",
+            "raw_object": "电流", "raw_state": "大于60A",
+            "canonical_surface": "电流>{quantity}", "subject_concept_ids": ["current"],
+            "operator_family": ">", "qualifiers": [{"dimension": "电流"}],
             "quantity": {"value": 60, "unit_canonical": "A", "inclusive": False},
         },
     ]
     report = gold_metrics(object_rows, state_rows, gold)
     assert report["exact_core_set_accuracy"] == 1.0
     assert report["core_concept"]["f1"] == 1.0
-    assert report["state_concept_accuracy"] == 1.0
+    assert report["state_surface_accuracy"] == 1.0
+    assert report["state_subject_binding_accuracy"] == 1.0
     assert report["operator_boundary_accuracy"] == 1.0
     assert report["quantity_accuracy"] == 1.0
+    assert report["qualifier_accuracy"] == 1.0

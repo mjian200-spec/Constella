@@ -53,7 +53,7 @@ def build_concept_admission_candidates(
         concept = concepts.get(concept_id)
         if not concept or concept.get("registration_status") == "APPROVED":
             continue
-        if concept_type not in {ConceptType.OBJECT, ConceptType.STATE}:
+        if concept_type != ConceptType.OBJECT:
             continue
         row = grouped.setdefault(concept_id, {
             "concept_id": concept_id,
@@ -89,7 +89,6 @@ def build_concept_admission_candidates(
 
     result: list[dict[str, Any]] = []
     for row in grouped.values():
-        maximum_support = max(row["support_by_type"].values(), default=0)
         name = row["canonical_name"].strip()
         deterministic_checks = {
             "known_concept": bool(name),
@@ -120,7 +119,7 @@ def build_concept_admission_candidates(
             "source_state_ids": sorted(row["source_state_ids"])[:20],
             "context_package_ids": sorted(row["context_package_ids"])[:20],
             "deterministic_checks": deterministic_checks,
-            "occurrence_count": maximum_support,
+            "occurrence_count": len(row["source_state_ids"]),
             "candidate_id": row["concept_id"],
             "lifecycle_state": LifecycleState.PENDING_CONCEPT,
         })
@@ -295,7 +294,7 @@ class ConceptAdmissionGate:
         for row in rows:
             if row.get("decision") not in _DECISIONS:
                 raise ValueError("invalid decision")
-            if row.get("selected_type") not in {None, ConceptType.OBJECT, ConceptType.STATE}:
+            if row.get("selected_type") not in {None, ConceptType.OBJECT}:
                 raise ValueError("invalid selected_type")
             if row["decision"] == "APPROVE" and row.get("selected_type") is None:
                 raise ValueError("APPROVE requires selected_type")

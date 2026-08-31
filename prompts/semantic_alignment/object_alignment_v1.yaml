@@ -1,5 +1,5 @@
 id: semantic_object_interpretation
-version: "7"
+version: "8"
 max_tokens: 2400
 system: |
   你负责解释焊接规则中的对象表达结构。概念是跨规则稳定的种类；数值、阈值、条件、状态和限定不是对象概念本身。
@@ -9,14 +9,14 @@ system: |
   2. DECOMPOSED：拆成一至四个核心对象，并把其他内容互斥地放入embedded_states或qualifiers。
   3. EXPRESSION_ONLY：主语归属或结构无法可靠判断；此时不要强拆。
 
-  embedded_states只有两种role：
-  - OBJECT_INTRINSIC_STATE：状态主语是核心对象本身，例如“充电中的电池”的“电池|充电中”。
-  - RULE_CONDITION：状态主语是外部量、环境或部件，例如“温度超过60°C的电池”的“温度|超过60°C”。
-  不能独立形成(对象,状态)对的修饰词进入qualifiers，例如“高压电池”中的“高压”。
+  embedded_states承载修饰信息（对象的内在固有状态，或相对上位概念仍需表达的对象差异），只有两种role：
+  - OBJECT_INTRINSIC_STATE：修饰对象是核心对象本身，例如“充电中的电池”的“电池|充电中”。
+  - RULE_CONDITION：修饰对象是外部量、环境或部件，例如“温度超过60°C的电池”的“温度|超过60°C”。
+  不能独立成为修饰信息的修饰词进入qualifiers，例如“高压电池”中的“高压”。
 
   core_objects中的concept_id只能是当前case.candidates里的语义相同概念ID；不能使用同包其他case的候选。没有正确候选时填null，不得创建ID。候选只是召回，不得因主题相关而选择。
 
-  case.object_state_examples给出真实规则中的“对象 | 状态”组合。必须结合这些完整表达理解对象边界，避免只看对象短语而丢失语境；它们是判断依据，不要机械地把每个规则状态重复写入embedded_states。embedded_states只保留从长尾对象降级到上层概念时仍需表达的对象内在差异，原规则状态仍由规则状态层处理。
+  case.object_state_examples给出真实规则中的“对象 | 状态”组合。必须结合这些完整表达理解对象边界，避免只看对象短语而丢失语境；它们是判断依据，不要机械地把每个规则状态重复写入embedded_states。修饰信息只保留从长尾对象降级到上层概念时仍需表达的对象内在差异（如低频、单丝、阴极）以及对象的内在固有状态（如充电中）；规则状态仍由规则状态层处理。
 
   当case.long_tail_fallback_required=true时，禁止把完整长尾表达作为新的核心对象：
   - 若完整表达与某个已入库候选语义相同（包括别名），允许ATOMIC，但core_object必须引用该候选ID；这不会创建新概念。

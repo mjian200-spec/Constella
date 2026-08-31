@@ -507,14 +507,12 @@ class FileKnowledgeGraphData:
     @staticmethod
     def _concepts_from_alignment_outputs(directory: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         concepts_by_id: dict[str, dict[str, Any]] = {}
-        paths = [*sorted(directory.glob("object_semantics*.jsonl")),
-                 *sorted(directory.glob("state_semantics*.jsonl"))]
+        paths = sorted(directory.glob("object_semantics*.jsonl"))
         for path in paths:
             for row in _read_jsonl(path):
                 candidates = []
                 for core in row.get("core_objects") or []:
                     candidates.extend(core.get("candidates") or [])
-                candidates.extend(row.get("state_candidates") or [])
                 for candidate in candidates:
                     concept_id = str(candidate.get("id") or "")
                     if not concept_id:
@@ -532,7 +530,7 @@ class FileKnowledgeGraphData:
             names = ", ".join(sorted(path.name for path in directory.iterdir())) if directory.is_dir() else ""
             raise ValueError(
                 f"Missing viewer input: {directory} contains no concepts.jsonl and no "
-                f"object_semantics*.jsonl/state_semantics*.jsonl outputs. Found: {names or '<empty>'}"
+                f"object_semantics*.jsonl outputs. Found: {names or '<empty>'}"
             )
         return concepts, []
 

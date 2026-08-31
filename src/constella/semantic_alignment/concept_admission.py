@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict, deque
+from collections import defaultdict, deque
 import hashlib
 import json
 import os
@@ -31,6 +31,12 @@ _RELATION_TYPES = {"IS_A", "PART_OF"}
 _GENERIC_RELATION_NAMES = {
     "头部", "尾部", "上部", "下部", "内部", "外部", "类型", "种类", "形式", "部分",
 }
+# A non-accepted review that stays parked instead of terminal: the concept is
+# not a duplicate, but approval lacked model confidence or reuse evidence.
+_DEFERABLE_GATE_REASONS = {
+    "admission_requires_high_model_confidence",
+    "approval_requires_more_evidence_reuse",
+}
 
 
 def build_initial_pending_concepts(
@@ -39,9 +45,11 @@ def build_initial_pending_concepts(
 ) -> list[dict[str, Any]]:
     """Rank every extracted, unregistered concept by rule-object occurrence."""
 
-    object_counts: Counter[str] = Counter()
-    object_variants: dict[str, Counter[str]] = defaultdict(Counter)
+    object_variants: dict[str, dict[str, set[str]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
     object_sources: dict[str, set[str]] = defaultdict(set)
+    object_rule_sources: dict[str, set[str]] = defaultdict(set)
     for rule in inputs.rules:
         for side in ("conditions", "antecedents", "consequents"):
             for state in rule.get(side) or []:
@@ -49,9 +57,13 @@ def build_initial_pending_concepts(
                 key = normalize_text(raw_object)
                 if not key:
                     continue
-                object_counts[key] += 1
-                object_variants[key][raw_object] += 1
-                object_sources[key].add(str(state.get("id") or ""))
+                state_id = str(state.get("id") or "")
+                if state_id:
+                    object_variants[key][raw_object].add(state_id)
+                    object_sources[key].add(state_id)
+                rule_id = str(rule.get("id") or "")
+                if rule_id:
+                    object_rule_sources[key].add(rule_id)
 
     concepts_by_id = {str(row["concept_id"]): row for row in memory.concepts}
     relation_hints: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -81,10 +93,21 @@ def build_initial_pending_concepts(
             })
 
     rows: list[dict[str, Any]] = []
+    registered = [
+        row for row in memory.concepts
+        if row.get("registration_status") == "APPROVED"
+        and str(row.get("type") or "") == ConceptType.OBJECT
+    ]
+    registered_terms = {
+        normalize_text(str(value)) for row in registered
+        for value in [row.get("canonical_name"), *(row.get("aliases") or [])]
+        if normalize_text(str(value or ""))
+    }
     for concept in memory.concepts:
         if (
             concept.get("registration_status") == "APPROVED"
             or str(concept["concept_id"]) in memory.reviewed_concept_ids
+            or str(concept.get("type") or "") == ConceptType.STATE
         ):
             continue
         terms = {
@@ -92,11 +115,19 @@ def build_initial_pending_concepts(
                 concept.get("canonical_name"), *(concept.get("aliases") or []),
             ] if normalize_text(str(value or ""))
         }
-        occurrence_count = sum(object_counts[term] for term in terms)
+        if terms & registered_terms:
+            # Duplicate check moves ahead of the model: the same surface already
+            # belongs to a registered concept, so this candidate must not be
+            # re-admitted under another id.
+            continue
         source_ids = sorted({value for term in terms for value in object_sources[term] if value})
-        variants: Counter[str] = Counter()
+        source_rule_ids = sorted({
+            value for term in terms for value in object_rule_sources[term] if value
+        })
+        variant_sources: dict[str, set[str]] = defaultdict(set)
         for term in terms:
-            variants.update(object_variants[term])
+            for text, state_ids in object_variants[term].items():
+                variant_sources[text].update(state_ids)
         concept_id = str(concept["concept_id"])
         evidence_ids = list(dict.fromkeys([
             *list(concept.get("evidence_ids") or []),
@@ -115,11 +146,21 @@ def build_initial_pending_concepts(
             "source_package_ids": list(concept.get("source_package_ids") or []),
             "source_seed_ids": list(concept.get("source_seed_ids") or []),
             "origin_depth": int(concept.get("origin_depth") or 0),
-            "occurrence_count": occurrence_count,
-            "source_state_ids": source_ids[:50],
+            "occurrence_count": len(source_ids),
+            "source_state_count": len(source_ids),
+            "source_rule_count": len(source_rule_ids),
+            "evidence_count": len(evidence_ids),
+            "source_state_ids": source_ids,
+            "source_rule_ids": source_rule_ids,
             "raw_object_variants": [
-                {"text": text, "count": count} for text, count in variants.most_common(12)
+                {"text": text, "count": len(state_ids)}
+                for text, state_ids in sorted(
+                    variant_sources.items(), key=lambda item: (-len(item[1]), item[0])
+                )[:12]
             ],
+            "raw_object_variant_source_ids": {
+                text: sorted(state_ids) for text, state_ids in sorted(variant_sources.items())
+            },
             "evidence": recall_concept_evidence(evidence_source, inputs.units),
             "catalog_relation_hints": relation_hints[concept_id],
             "lifecycle_state": LifecycleState.PENDING_CONCEPT,
@@ -166,28 +207,86 @@ def recall_concept_evidence(
     return [row[1] for row in scored[:limit]]
 
 
+def _rule_context_draft(
+    name: str,
+    state_ids: list[str],
+    state_context: dict[str, tuple[str, str]],
+) -> str:
+    """Draft a definition from the object-plus-state context inside rule originals."""
+    contexts: list[str] = []
+    seen: set[str] = set()
+    for state_id in state_ids:
+        raw_state, raw_expression = state_context.get(state_id, ("", ""))
+        if not raw_state or raw_state in seen:
+            continue
+        seen.add(raw_state)
+        context = f"状态「{raw_state}」"
+        if raw_expression:
+            context += f"，所在规则原文「{raw_expression[:120]}」"
+        contexts.append(context)
+        if len(contexts) >= 4:
+            break
+    if not contexts:
+        return ""
+    return f"对象「{name}」在规则原文语境中的出现：{'；'.join(contexts)}。"
+
+
 def build_pending_concepts_from_proposals(
     proposal_rows: list[dict[str, Any]],
     inputs: AlignmentInputs,
     memory: MemorySnapshot,
     *,
     reviewed_concept_ids: set[str] | None = None,
+    blocked_names: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Turn unresolved alignment proposals into complete, evidence-bound candidates."""
 
     reviewed = reviewed_concept_ids or set()
     concepts = {str(row["concept_id"]): row for row in memory.concepts}
+    blocked = {
+        normalize_text(str(value)) for value in blocked_names or []
+        if normalize_text(str(value or ""))
+    }
+    # Alignment proposals carry a name-hash id while extracted concepts carry
+    # catalog ids; terminal/parked reviews are therefore matched by normalized
+    # name, not by id, so a rejected or deferred name cannot re-enter pending
+    # under a fresh hash id.
+    registered_terms = {
+        normalize_text(str(value)) for row in memory.concepts
+        if row.get("registration_status") == "APPROVED"
+        for value in [row.get("canonical_name"), *(row.get("aliases") or [])]
+        if normalize_text(str(value or ""))
+    }
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     supported_kinds = {
         ProposalKind.OBJECT_CONCEPT,
         ProposalKind.CONCEPT_APPROVAL, ProposalKind.TYPE_REVIEW,
     }
+    # Map states to their raw text and the original rule sentence they appear
+    # in, so candidates that never existed as extracted concepts (no catalog
+    # record, therefore no definition) still get a definition draft grounded in
+    # the object-plus-state context of the rule originals.
+    state_context: dict[str, tuple[str, str]] = {}
+    for rule in inputs.rules:
+        raw_expression = str(rule.get("raw_expression") or "")
+        for side in ("conditions", "antecedents", "consequents"):
+            for state in rule.get(side) or []:
+                state_id = str(state.get("id") or "")
+                if state_id and state_id not in state_context:
+                    raw_state = str(state.get("raw_state") or "") or str(
+                        state.get("normalized_state") or ""
+                    )
+                    if raw_state:
+                        state_context[state_id] = (raw_state, raw_expression)
     for proposal in proposal_rows:
         if proposal.get("proposal_kind") not in supported_kinds:
             continue
         name = str(proposal.get("canonical_name") or "").strip()
         concept_type = str(proposal.get("concept_type") or "")
         if not name or concept_type != ConceptType.OBJECT:
+            continue
+        normalized_name = normalize_text(name)
+        if normalized_name in blocked or normalized_name in registered_terms:
             continue
         concept_id = str(proposal.get("concept_id") or "") or stable_id(
             "concept", {"name": normalize_text(name), "type": concept_type},
@@ -204,24 +303,36 @@ def build_pending_concepts_from_proposals(
             "concept_id": concept_id,
             "canonical_name": str(source.get("canonical_name") or name),
             "aliases": list(source.get("aliases") or []),
-            "definition": source.get("definition"),
+            "definition": source.get("definition") or _rule_context_draft(
+                name, proposal.get("source_state_ids") or [], state_context,
+            ) or None,
             "definition_type": source.get("definition_type") or "contextual_draft",
             "suggested_type": concept_type,
             "evidence_ids": set(source.get("evidence_ids") or []),
             "source_package_ids": set(source.get("source_package_ids") or []),
             "source_seed_ids": list(source.get("source_seed_ids") or []),
             "origin_depth": int(source.get("origin_depth") or 0),
-            "occurrence_count": 0,
             "source_state_ids": set(),
-            "raw_object_variants": Counter(),
+            "source_rule_ids": set(),
+            "raw_object_variant_source_ids": defaultdict(set),
             "lifecycle_state": LifecycleState.PENDING_CONCEPT,
             "candidate_origin": "UNPROCESSED_OBJECT",
         })
-        row["occurrence_count"] += int(proposal.get("support") or 0)
-        row["source_state_ids"].update(proposal.get("source_state_ids") or [])
+        proposal_state_ids = {
+            str(value) for value in proposal.get("source_state_ids") or [] if value
+        }
+        row["source_state_ids"].update(proposal_state_ids)
+        row["source_rule_ids"].update(proposal.get("source_rule_ids") or [])
         row["source_package_ids"].update(proposal.get("context_package_ids") or [])
-        for value in proposal.get("raw_expressions") or []:
-            row["raw_object_variants"][str(value)] += 1
+        expression_sources = proposal.get("raw_expression_source_state_ids") or {}
+        expressions = [str(value) for value in proposal.get("raw_expressions") or []]
+        for expression in expressions:
+            source_ids = {
+                str(value) for value in expression_sources.get(expression) or [] if value
+            }
+            if not source_ids and len(expressions) == 1:
+                source_ids = proposal_state_ids
+            row["raw_object_variant_source_ids"][expression].update(source_ids)
 
     result: list[dict[str, Any]] = []
     for row in grouped.values():
@@ -236,15 +347,28 @@ def build_pending_concepts_from_proposals(
         }
         result.append({
             **{key: value for key, value in row.items() if key not in {
-                "evidence_ids", "source_package_ids", "source_state_ids", "raw_object_variants",
+                "evidence_ids", "source_package_ids", "source_state_ids", "source_rule_ids",
+                "raw_object_variant_source_ids",
             }},
+            "occurrence_count": len(row["source_state_ids"]),
+            "source_state_count": len(row["source_state_ids"]),
+            "source_rule_count": len(row["source_rule_ids"]),
+            "evidence_count": len(row["evidence_ids"]),
             "evidence_ids": sorted(row["evidence_ids"]),
             "source_package_ids": sorted(row["source_package_ids"]),
-            "source_state_ids": sorted(row["source_state_ids"])[:50],
+            "source_state_ids": sorted(row["source_state_ids"]),
+            "source_rule_ids": sorted(row["source_rule_ids"]),
             "raw_object_variants": [
-                {"text": text, "count": count}
-                for text, count in row["raw_object_variants"].most_common(12)
+                {"text": text, "count": len(source_ids)}
+                for text, source_ids in sorted(
+                    row["raw_object_variant_source_ids"].items(),
+                    key=lambda item: (-len(item[1]), item[0]),
+                )[:12]
             ],
+            "raw_object_variant_source_ids": {
+                text: sorted(source_ids)
+                for text, source_ids in sorted(row["raw_object_variant_source_ids"].items())
+            },
             "evidence": recall_concept_evidence(concept, inputs.units),
         })
     ranked = rank_by_occurrence(result, identity_field="candidate_id")
@@ -269,11 +393,13 @@ class SerialConceptAdmissionRunner:
         output_dir: str | Path,
         *,
         client=None,
+        allow_defer: bool = True,
     ) -> None:
         self.models = models
         self.model_key = model_key
         self.output_dir = Path(output_dir)
         self.client = client or LLMClient(models)
+        self.allow_defer = allow_defer
         self.prompt = yaml.safe_load(Path(prompt_path).read_text(encoding="utf-8"))
         if not isinstance(self.prompt, dict) or not {"id", "version", "system"} <= set(self.prompt):
             raise ValueError("invalid serial concept admission prompt")
@@ -299,6 +425,7 @@ class SerialConceptAdmissionRunner:
             "prompt_id": self.prompt["id"],
             "prompt_version": str(self.prompt["version"]),
             "model": self.models[self.model_key]["model"],
+            "allow_defer": self.allow_defer,
         })
         saved = self._load_checkpoint(checkpoint_path, checkpoint_key) if not refresh else None
         if saved:
@@ -392,8 +519,8 @@ class SerialConceptAdmissionRunner:
             "generated_pending_concept_count": generated_count,
             "approved_count": sum(row["decision"] == "APPROVE" and row["accepted"] for row in reviews),
             "merged_count": sum(row["decision"] == "MERGE" and row["accepted"] for row in reviews),
-            "deferred_count": sum(row["decision"] == "DEFER" for row in reviews),
-            "rejected_count": sum(row["decision"] == "REJECT" for row in reviews),
+            "deferred_count": sum(row["status"] == "DEFER" for row in reviews),
+            "rejected_count": sum(row["status"] == "REJECT" for row in reviews),
             "failed_count": sum(row["decision"] == "FAILED" for row in reviews),
             "reviewed_memory_event_count": len(events),
             "final_memory_version": final_memory.version,
@@ -448,8 +575,14 @@ class SerialConceptAdmissionRunner:
         return payload
 
     def _process(self, package: dict[str, Any]) -> dict[str, Any]:
+        system = self.prompt["system"]
+        if not self.allow_defer:
+            system += (
+                "\n\n本轮为终局重审：禁止DEFER。candidate.defer_history非空表示该概念曾在更早轮次"
+                "被延后，现在必须给出终局结论；确有把握才APPROVE或MERGE，否则REJECT。"
+            )
         messages = [
-            {"role": "system", "content": self.prompt["system"]},
+            {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(package, ensure_ascii=False)},
         ]
         errors: list[str] = []
@@ -517,8 +650,8 @@ class SerialConceptAdmissionRunner:
         if decision != "MERGE" and target is not None:
             raise ValueError("only merge may select target_concept_id")
         selected_type = output.get("selected_type")
-        if decision == "APPROVE" and selected_type not in {ConceptType.OBJECT, ConceptType.STATE}:
-            raise ValueError("approval requires object/state selected_type")
+        if decision == "APPROVE" and selected_type != ConceptType.OBJECT:
+            raise ValueError("approval requires object selected_type")
         if decision != "APPROVE" and selected_type is not None:
             raise ValueError("non-approval selected_type must be null")
         allowed_evidence = {
@@ -551,7 +684,7 @@ class SerialConceptAdmissionRunner:
         for missing in output.get("missing_relation_concepts") or []:
             if not isinstance(missing, dict) or not str(missing.get("canonical_name") or "").strip():
                 raise ValueError("missing relation concept requires canonical_name")
-            if missing.get("type") not in {None, ConceptType.OBJECT, ConceptType.STATE}:
+            if missing.get("type") not in {None, ConceptType.OBJECT}:
                 raise ValueError("invalid missing relation concept type")
             if not set(missing.get("evidence_ids") or []) <= allowed_evidence:
                 raise ValueError("missing relation concept cites unknown evidence")
@@ -568,21 +701,37 @@ class SerialConceptAdmissionRunner:
         if result.get("status") != "success":
             return ({
                 "concept_id": candidate["concept_id"], "canonical_name": candidate["canonical_name"],
-                "decision": "FAILED", "accepted": False, "errors": result.get("errors") or [],
+                "decision": "FAILED", "status": "FAILED", "accepted": False,
+                "errors": result.get("errors") or [],
                 "memory_version": package["memory_version"],
             }, None, [])
         decision = result["output"]
-        accepted, gate_reason = self._post_gate(decision, registry)
+        accepted, gate_reason = self._post_gate(
+            decision, registry, allow_defer=self.allow_defer,
+        )
+        outcome = str(decision["decision"])
+        if outcome == "DEFER" and not self.allow_defer:
+            outcome = "REJECT"
+        if accepted:
+            status = "APPROVED"
+        elif outcome in {"DEFER", "REJECT"}:
+            status = outcome
+        elif gate_reason in _DEFERABLE_GATE_REASONS:
+            status = "DEFER" if self.allow_defer else "REJECT"
+        else:
+            status = "NOT_ACCEPTED"
         review = {
             "review_id": stable_id("serial_concept_review", {
                 "package_id": package["package_id"], "decision": decision,
             }),
             "concept_id": candidate["concept_id"], "canonical_name": candidate["canonical_name"],
+            "aliases": list(candidate.get("aliases") or []),
             "occurrence_count": candidate.get("occurrence_count", 0),
             "occurrence_rank": candidate.get("occurrence_rank"),
             "rank_confidence": candidate.get("rank_confidence"),
-            "memory_version": package["memory_version"], "decision": decision["decision"],
-            "accepted": accepted, "gate_reason": gate_reason, "model_decision": decision,
+            "memory_version": package["memory_version"], "decision": outcome,
+            "status": status, "accepted": accepted, "gate_reason": gate_reason,
+            "model_decision": decision,
             "package_id": package["package_id"], "prompt_id": self.prompt["id"],
             "prompt_version": str(self.prompt["version"]),
             "configured_model": self.models[self.model_key]["model"],
@@ -592,18 +741,32 @@ class SerialConceptAdmissionRunner:
         return review, event, generated
 
     @staticmethod
-    def _post_gate(decision: dict[str, Any], registry: ConceptRegistry) -> tuple[bool, str]:
+    def _post_gate(
+        decision: dict[str, Any],
+        registry: ConceptRegistry,
+        *,
+        allow_defer: bool = True,
+    ) -> tuple[bool, str]:
         kind = decision["decision"]
-        if kind in {"DEFER", "REJECT"}:
-            return False, f"model_{kind.lower()}"
+        if kind == "REJECT":
+            return False, "model_reject"
+        if kind == "DEFER":
+            if allow_defer:
+                return False, "model_defer"
+            return False, "re_review_does_not_allow_defer"
         if decision["confidence"] != "HIGH":
             return False, "admission_requires_high_model_confidence"
         if kind == "APPROVE" and not all(decision["boundary_checks"].values()):
+            checks = decision["boundary_checks"]
+            if not checks["evidence_sufficient"] and all(
+                value for key, value in checks.items() if key != "evidence_sufficient"
+            ):
+                return False, "approval_requires_more_evidence_reuse"
             return False, "approval_requires_all_boundary_checks"
         if kind == "APPROVE":
             terms = [decision.get("canonical_name"), *(decision.get("aliases") or [])]
             if any(registry.registered_term_owners(str(term or "")) for term in terms if term):
-                return False, "registered_name_or_alias_collision_requires_merge"
+                return False, "duplicate_registered_name_or_alias_requires_merge"
         if kind == "MERGE":
             target = str(decision.get("target_concept_id") or "")
             required = {
@@ -620,17 +783,17 @@ class SerialConceptAdmissionRunner:
     def _event(candidate: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
         decision = review["model_decision"]
         if not review["accepted"]:
-            outcome = str(decision["decision"])
-            status = outcome if outcome in {"DEFER", "REJECT"} else "NOT_ACCEPTED"
+            status = str(review["status"])
             return {
                 "event_id": stable_id("memory_event", review["review_id"]),
                 "status": status,
                 "proposal_kind": "CONCEPT_REVIEW",
                 "concept_id": candidate["concept_id"],
                 "canonical_name": candidate["canonical_name"],
+                "aliases": list(candidate.get("aliases") or []),
                 "base_memory_version": review["memory_version"],
                 "source_review_id": review["review_id"],
-                "decision": outcome,
+                "decision": str(review["decision"]),
                 "accepted": False,
                 "gate_reason": review["gate_reason"],
                 "reason": decision["reason"],
@@ -759,7 +922,7 @@ class SerialConceptAdmissionRunner:
     def _fingerprint(self, package: dict[str, Any]) -> str:
         return hashlib.sha256(json.dumps({
             "package": package, "prompt": self.prompt,
-            "model": self.models[self.model_key],
+            "model": self.models[self.model_key], "allow_defer": self.allow_defer,
         }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

@@ -3,11 +3,13 @@ from __future__ import annotations
 from enum import StrEnum
 
 
-SCHEMA_VERSION = "semantic_alignment.v2"
+SCHEMA_VERSION = "semantic_alignment.v3"
 
 
 class ConceptType(StrEnum):
     OBJECT = "object"
+    # Read compatibility for historical catalogs/memory only. New alignment,
+    # admission, identity comparison, and formal exports are object-only.
     STATE = "state"
 
 
@@ -36,8 +38,6 @@ class ProposalKind(StrEnum):
     CONCEPT_APPROVAL = "CONCEPT_APPROVAL"
     CONCEPT_MERGE = "CONCEPT_MERGE"
     OBJECT_CONCEPT = "OBJECT_CONCEPT"
-    STATE_CONCEPT = "STATE_CONCEPT"
-    NORMALIZATION_PATTERN = "NORMALIZATION_PATTERN"
     ALIAS = "ALIAS"
     TYPE_REVIEW = "TYPE_REVIEW"
 

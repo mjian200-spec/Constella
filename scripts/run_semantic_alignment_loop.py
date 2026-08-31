@@ -26,7 +26,20 @@ from constella.semantic_alignment import (  # noqa: E402
     require_complete_alignment,
 )
 from constella.semantic_alignment.assembly import write_json, write_jsonl  # noqa: E402
+from constella.semantic_alignment.concept_admission import (  # noqa: E402
+    recall_concept_evidence,
+)
 from constella.semantic_alignment.evaluation import read_jsonl  # noqa: E402
+from constella.semantic_alignment.registry import normalize_text  # noqa: E402
+
+
+# Each cycle aligns its tier's objects against the current library and then
+# admits, in the same cycle, the proposals that alignment raised. Cycle 0
+# admits the extraction-stage catalog only; the final cycle re-reviews the
+# deferred candidates with the now-complete library.
+STAGE_PLAN: tuple[tuple[str, str | None], ...] = (
+    ("INITIAL", None), ("H1", "H1"), ("H2", "H2"), ("H3", "H3"), (None, None),
+)
 
 
 def _distribution(rows: list[dict[str, Any]], field: str) -> dict[str, int]:
@@ -52,6 +65,7 @@ def _supplement_review_history(
             "proposal_kind": "CONCEPT_REVIEW",
             "concept_id": str(review["concept_id"]),
             "canonical_name": str(review.get("canonical_name") or ""),
+            "aliases": list(review.get("aliases") or []),
             "base_memory_version": review.get("memory_version"),
             "source_review_id": review_id,
             "decision": decision,
@@ -103,6 +117,7 @@ def _registered_library(
     concepts = [
         row for row in memory.concepts
         if row.get("registration_status") == "APPROVED"
+        and str(row.get("type") or "") == "object"
     ]
     concept_ids = {str(row["concept_id"]) for row in concepts}
     relations = [
@@ -114,6 +129,7 @@ def _registered_library(
     candidates = [
         row for row in memory.concepts
         if row.get("registration_status") != "APPROVED"
+        and str(row.get("type") or "") != "state"
     ]
     return concepts, relations, candidates
 
@@ -178,6 +194,118 @@ def _run_alignment(
     return report, read_jsonl(proposals_path)
 
 
+def _parked_from_event(
+    event: dict[str, Any],
+    pending_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Turn a legacy DEFER memory event into a parked candidate for the final pass."""
+    row = pending_by_id.get(str(event.get("concept_id") or ""))
+    if row is None:
+        return None
+    parked = dict(row)
+    parked["defer_history"] = [{
+        "cycle": 0,
+        "source": "INITIAL_MEMORY",
+        "decision": "DEFER",
+        "reason": event.get("reason") or event.get("gate_reason"),
+    }]
+    return parked
+
+
+def _accumulate_parked(
+    proposal_rows: list[dict[str, Any]],
+    parked_rows: dict[str, dict[str, Any]],
+    inputs,
+) -> None:
+    """Merge unique full-corpus evidence into parked DEFER candidates.
+
+    Parked concepts are skipped by build_pending_concepts_from_proposals during
+    the H1/H2/H3 cycles. Evidence is deduplicated by source-state identity; a
+    later tier is another processing stage, not another occurrence.
+    """
+    supported_kinds = {"OBJECT_CONCEPT", "CONCEPT_APPROVAL", "TYPE_REVIEW"}
+    parked_by_term: dict[str, list[dict[str, Any]]] = {}
+    for parked in parked_rows.values():
+        for value in [parked.get("canonical_name"), *(parked.get("aliases") or [])]:
+            term = normalize_text(str(value or ""))
+            if term:
+                parked_by_term.setdefault(term, []).append(parked)
+    for proposal in proposal_rows:
+        if proposal.get("proposal_kind") not in supported_kinds:
+            continue
+        row = parked_rows.get(str(proposal.get("concept_id") or ""))
+        if row is None:
+            # Only deterministic identity is allowed here: an unambiguous
+            # canonical-name or declared-alias owner. Near-synonyms stay
+            # separate and are compared by the final model review.
+            owners = parked_by_term.get(
+                normalize_text(str(proposal.get("canonical_name") or "")),
+                [],
+            )
+            row = owners[0] if len(owners) == 1 else None
+        if row is None:
+            continue
+        source_state_ids = {
+            *(row.get("source_state_ids") or []),
+            *(proposal.get("source_state_ids") or []),
+        }
+        row["source_state_ids"] = sorted(source_state_ids)
+        row["occurrence_count"] = len(source_state_ids)
+        row["source_state_count"] = len(source_state_ids)
+        source_rule_ids = {
+            *(row.get("source_rule_ids") or []),
+            *(proposal.get("source_rule_ids") or []),
+        }
+        row["source_rule_ids"] = sorted(source_rule_ids)
+        row["source_rule_count"] = len(source_rule_ids)
+        package_ids = {
+            *(row.get("source_package_ids") or []),
+            *(proposal.get("context_package_ids") or []),
+        }
+        evidence_ids = set(row.get("evidence_ids") or [])
+        for package_id in package_ids:
+            package = inputs.context_packages.get(str(package_id)) or {}
+            evidence_ids.update(package.get("core_unit_ids") or [])
+            evidence_ids.update(package.get("support_unit_ids") or [])
+        row["source_package_ids"] = sorted(package_ids)
+        row["evidence_ids"] = sorted(evidence_ids)
+        row["evidence_count"] = len(evidence_ids)
+        variant_sources = {
+            str(expression): {str(value) for value in values if value}
+            for expression, values in (
+                row.get("raw_object_variant_source_ids") or {}
+            ).items()
+        }
+        proposal_sources = {
+            str(value) for value in proposal.get("source_state_ids") or [] if value
+        }
+        expression_sources = proposal.get("raw_expression_source_state_ids") or {}
+        expressions = [str(value) for value in proposal.get("raw_expressions") or []]
+        for expression in expressions:
+            values = {
+                str(value) for value in expression_sources.get(expression) or [] if value
+            }
+            if not values and len(expressions) == 1:
+                values = proposal_sources
+            variant_sources.setdefault(expression, set()).update(values)
+        row["raw_object_variant_source_ids"] = {
+            expression: sorted(values)
+            for expression, values in sorted(variant_sources.items())
+        }
+        if variant_sources:
+            row["raw_object_variants"] = [
+                {"text": expression, "count": len(values)}
+                for expression, values in sorted(
+                    variant_sources.items(), key=lambda item: (-len(item[1]), item[0])
+                )[:12]
+            ]
+        row["evidence"] = recall_concept_evidence({
+            "canonical_name": row["canonical_name"],
+            "aliases": row.get("aliases") or [],
+            "evidence_ids": row["evidence_ids"],
+        }, inputs.units)
+
+
 def _summary(
     *,
     cycles: list[dict[str, Any]],
@@ -198,7 +326,9 @@ def _summary(
         "final_memory_version": memory.version,
         "final_library_audit": audit_concept_library(memory),
         "final_object_status_counts": assembly.get("object_status_counts") or {},
-        "final_state_status_counts": assembly.get("state_status_counts") or {},
+        "final_state_subject_binding_status_counts": (
+            assembly.get("state_subject_binding_status_counts") or {}
+        ),
         "final_invariants": assembly.get("invariants") or {},
         "cycles": cycles,
     }
@@ -234,7 +364,7 @@ def _review_markdown(report: dict[str, Any]) -> str:
         "",
         "## 每轮变化",
         "",
-        "| 轮次 | 新记忆事件 | 批准 | 合并 | 延后 | 拒绝 | 下一轮候选 |",
+        "| 轮次 | 新记忆事件 | 批准 | 合并 | 延后 | 拒绝 | 当轮候选 |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for row in report["cycles"]:
@@ -284,8 +414,11 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if args.max_cycles < 4:
-        parser.error("--max-cycles must be at least 4: initial/H1/H2/H3 admission stages")
+    if args.max_cycles < 5:
+        parser.error(
+            "--max-cycles must be at least 5: initial catalog, H1/H2/H3 aligned "
+            "admission stages, and the final deferred re-review"
+        )
     if args.admission_limit is not None and args.admission_limit < 1:
         parser.error("--admission-limit must be positive")
     if args.object_limit is not None and args.object_limit < 1:
@@ -305,6 +438,20 @@ def main() -> int:
     catalog = [dict(row) for row in inputs.concepts]
     memory = MemorySnapshot.build(catalog, inputs.relations, events)
     pending = build_initial_pending_concepts(inputs, memory)
+    reviewed_concept_ids: set[str] = {
+        str(row["concept_id"]) for row in events
+        if row.get("concept_id") and str(row.get("status") or "").upper() != "DEFER"
+    }
+    parked_rows: dict[str, dict[str, Any]] = {}
+    pending_by_id = {str(row["concept_id"]): row for row in pending}
+    for event in events:
+        if str(event.get("status") or "").upper() != "DEFER":
+            continue
+        parked = _parked_from_event(event, pending_by_id)
+        if parked is not None:
+            parked_rows[str(parked["concept_id"])] = parked
+    if parked_rows:
+        pending = [row for row in pending if str(row["concept_id"]) not in parked_rows]
     initial_report = {
         "pending_concept_count": len(pending),
         "rank_confidence_counts": _distribution(pending, "rank_confidence"),
@@ -322,22 +469,61 @@ def main() -> int:
         (Path(args.config_dir) / "models.yaml").read_text(encoding="utf-8")
     )["models"]
     cycles: list[dict[str, Any]] = []
-    reviewed_concept_ids: set[str] = {
-        str(row["concept_id"]) for row in events if row.get("concept_id")
-    }
-    stage_plan: tuple[tuple[str, str | None], ...] = (
-        ("INITIAL", "H1"), ("H1", "H2"), ("H2", "H3"), ("H3", None),
-    )
     priority_manifest = output / "object_priority_manifest.jsonl"
     stop_reason = "MAX_CYCLES_REACHED"
-    for cycle_number, (admission_source, alignment_tier) in enumerate(stage_plan, start=1):
+    for cycle_number, (admission_source, alignment_tier) in enumerate(STAGE_PLAN, start=1):
         cycle_dir = output / f"cycle_{cycle_number:03d}"
+        final_pass = admission_source is None
+        alignment_report = None
+        if final_pass:
+            # Final re-review: only the parked DEFER candidates remain, the
+            # library is complete, and the review decides by recurrence
+            # evidence and by synonym/near-synonym comparison against the
+            # final library instead of the routine quality checks.
+            pending = [dict(row) for row in parked_rows.values()]
+            prompt_path = ROOT / "prompts" / "semantic_alignment" / "concept_final_review_v1.yaml"
+        else:
+            prompt_path = ROOT / "prompts" / "semantic_alignment" / "concept_admission_v2.yaml"
+            if alignment_tier is not None:
+                # Align this tier's objects against the current library first,
+                # then admit the proposals that alignment raised in the same
+                # cycle; cycle 0 admits the extraction-stage catalog as-is.
+                concept_input = cycle_dir / "concept_input"
+                _write_concept_input(concept_input, catalog, inputs.relations)
+                alignment_report, proposals = _run_alignment(
+                    args,
+                    concept_dir=concept_input,
+                    reviewed_memory=output / "reviewed_memory.jsonl",
+                    output_dir=cycle_dir / "alignment",
+                    tier=alignment_tier,
+                    priority_manifest=priority_manifest,
+                )
+                # Terminal and parked names block fresh hash-id proposals, so a
+                # name that was rejected or deferred under a catalog id cannot
+                # re-enter pending under an alignment-side id.
+                blocked_names = {
+                    normalize_text(str(value))
+                    for row in [
+                        *[
+                            event for event in events
+                            if str(event.get("status") or "").upper() != "DEFER"
+                        ],
+                        *parked_rows.values(),
+                    ]
+                    for value in [row.get("canonical_name"), *(row.get("aliases") or [])]
+                    if normalize_text(str(value or ""))
+                }
+                pending = build_pending_concepts_from_proposals(
+                    proposals, inputs, memory,
+                    reviewed_concept_ids=reviewed_concept_ids | set(parked_rows),
+                    blocked_names=blocked_names,
+                )
+                _accumulate_parked(proposals, parked_rows, inputs)
         catalog = _catalog_with_candidates(catalog, pending)
         event_count_before = len(events)
         admission = SerialConceptAdmissionRunner(
-            models, args.model_key,
-            ROOT / "prompts" / "semantic_alignment" / "concept_admission_v2.yaml",
-            cycle_dir / "admission_cache",
+            models, args.model_key, prompt_path, cycle_dir / "admission_cache",
+            allow_defer=not final_pass,
         )
         reviews, events, admission_report = admission.run(
             pending,
@@ -347,7 +533,29 @@ def main() -> int:
             refresh=args.refresh_admissions,
             limit=args.admission_limit,
         )
-        reviewed_concept_ids.update(str(row["concept_id"]) for row in reviews)
+        pending_by_id = {str(row["concept_id"]): row for row in pending}
+        for review in reviews:
+            concept_id = str(review["concept_id"])
+            if review["status"] != "DEFER":
+                reviewed_concept_ids.add(concept_id)
+                continue
+            candidate = pending_by_id.get(concept_id)
+            if candidate is None:
+                reviewed_concept_ids.add(concept_id)
+                continue
+            parked = dict(candidate)
+            parked["defer_history"] = [
+                *(candidate.get("defer_history") or []),
+                {
+                    "cycle": cycle_number,
+                    "decision": "DEFER",
+                    "reason": (
+                        (review.get("model_decision") or {}).get("reason")
+                        or review.get("gate_reason")
+                    ),
+                },
+            ]
+            parked_rows[concept_id] = parked
         write_jsonl(cycle_dir / "pending_concepts.jsonl", pending)
         write_jsonl(cycle_dir / "admission_reviews.jsonl", reviews)
         write_jsonl(output / "reviewed_memory.jsonl", events)
@@ -377,37 +585,23 @@ def main() -> int:
             } for row in priority_builder.scored_cases if row["tier"] != PackageTier.H0]
             write_jsonl(priority_manifest, priority_rows)
 
-        if alignment_tier is None:
+        if final_pass:
             cycle_report = {
                 "cycle": cycle_number,
-                "admission_source": admission_source,
+                "admission_source": None,
                 "alignment_tier": None,
                 "new_memory_event_count": len(events) - event_count_before,
                 "admission": admission_report,
                 "library_audit": library_audit,
                 "alignment": None,
-                "next_pending_concept_count": 0,
+                "final_rereview_count": len(parked_rows),
+                "next_pending_concept_count": len(pending),
             }
             cycles.append(cycle_report)
             write_json(cycle_dir / "cycle_report.json", cycle_report)
             stop_reason = "ALL_TIERS_COMPLETED"
             break
 
-        concept_input = cycle_dir / "concept_input"
-        _write_concept_input(concept_input, catalog, inputs.relations)
-        alignment_report, proposals = _run_alignment(
-            args,
-            concept_dir=concept_input,
-            reviewed_memory=output / "reviewed_memory.jsonl",
-            output_dir=cycle_dir / "alignment",
-            tier=alignment_tier,
-            priority_manifest=priority_manifest,
-        )
-        pending = build_pending_concepts_from_proposals(
-            proposals, inputs, memory,
-            reviewed_concept_ids=reviewed_concept_ids,
-        )
-        write_jsonl(cycle_dir / "next_pending_concepts.jsonl", pending)
         cycle_report = {
             "cycle": cycle_number,
             "admission_source": admission_source,
@@ -416,8 +610,8 @@ def main() -> int:
             "admission": admission_report,
             "library_audit": library_audit,
             "alignment": alignment_report,
+            "parked_concept_count": len(parked_rows),
             "next_pending_concept_count": len(pending),
-            "next_rank_confidence_counts": _distribution(pending, "rank_confidence"),
         }
         cycles.append(cycle_report)
         write_json(cycle_dir / "cycle_report.json", cycle_report)

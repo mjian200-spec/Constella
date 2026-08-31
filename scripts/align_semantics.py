@@ -96,7 +96,7 @@ def main() -> int:
     )
     selected_packages = eligible[:args.object_limit] if args.object_limit is not None else eligible
     dry_report = {
-        "schema_version": "semantic_alignment.v2",
+        "schema_version": "semantic_alignment.v3",
         "rule_count": len(inputs.rules),
         "source_state_count": len(builder.state_rows),
         "source_occurrence_count": builder.source_occurrence_count,
