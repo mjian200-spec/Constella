@@ -90,6 +90,45 @@ def test_unprocessed_objects_are_banded_by_rank_one_five_twenty_five():
     )
 
 
+def test_object_alignment_input_pairs_each_object_with_its_rule_states():
+    builder = SemanticPackageBuilder(_inputs())
+    cases = [case for package in builder.object_alignment_packages() for case in package["cases"]]
+    composite = next(case for case in cases if case["name"] == "温度超过60°C时充电中的电池组")
+
+    assert composite["object_state_examples"] == [{
+        "object": "温度超过60°C时充电中的电池组",
+        "state": "安全检查",
+        "expression": "温度超过60°C时充电中的电池组 | 安全检查",
+        "frequency": 1,
+    }]
+    assert "state_examples" not in composite
+
+
+def test_low_frequency_exact_match_is_not_forced_into_long_tail_fallback():
+    inputs = AlignmentInputs(
+        concepts=[{
+            "concept_id": "combined", "canonical_name": "MIG/MAG焊", "aliases": [],
+            "type": "object", "registration_status": "APPROVED",
+        }],
+        relations=[],
+        rules=[{
+            "id": "r1", "conditions": [],
+            "antecedents": [{"id": "s1", "object": "MIG/MAG焊", "raw_state": "稳定"}],
+            "consequents": [],
+        }],
+        context_packages={}, units={},
+    )
+    cases = [
+        case
+        for package in SemanticPackageBuilder(inputs).object_alignment_packages()
+        for case in package["cases"]
+    ]
+
+    assert len(cases) == 1
+    assert cases[0]["exact_resolution"]["status"] == "MATCHED"
+    assert cases[0]["long_tail_fallback_required"] is False
+
+
 def test_unapproved_exact_match_id_is_not_leaked_to_object_llm_package():
     inputs = AlignmentInputs(
         concepts=[{

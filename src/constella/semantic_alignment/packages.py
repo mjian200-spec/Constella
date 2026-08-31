@@ -129,7 +129,12 @@ class SemanticPackageBuilder:
                 "name": source["name"],
                 "raw_variants": source["raw_variants"],
                 "frequency": source["frequency"],
-                "state_examples": source["state_examples"],
+                "object_state_examples": [{
+                    "object": source["name"],
+                    "state": example["raw_state"],
+                    "expression": f"{source['name']} | {example['raw_state']}",
+                    "frequency": example["frequency"],
+                } for example in source["state_examples"]],
                 "contexts": source["contexts"],
                 "confidence": source["confidence"],
                 "rank_confidence": source["rank_confidence"],
@@ -138,6 +143,7 @@ class SemanticPackageBuilder:
                 "long_tail_fallback_required": (
                     source["rank_confidence"] == RankConfidence.LOW
                     and int(source["frequency"]) <= LONG_TAIL_MAX_OCCURRENCE
+                    and source["exact_resolution"].get("status") != AlignmentStatus.MATCHED
                 ),
                 "lexical_coverage": source["lexical_coverage"],
                 "structure_signal_count": source["structure_signal_count"],

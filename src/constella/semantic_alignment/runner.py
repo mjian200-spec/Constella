@@ -174,14 +174,23 @@ class SemanticAlignmentRunner:
                 return result
             except Exception as error:
                 errors.append(f"{type(error).__name__}: {error}")
+                if (
+                    content is not None
+                    and len(package.get("cases") or []) > 1
+                    and (
+                        "is not in this case candidates" in str(error)
+                        or "cover every object exactly once" in str(error)
+                    )
+                ):
+                    break
                 if attempt < max_attempts:
                     if content is not None:
                         messages.append({"role": "assistant", "content": content})
                     correction = (
-                        "若错误涉及long-tail：该对象只能使用DECOMPOSED或EXPRESSION_ONLY。"
-                        "DECOMPOSED必须引用candidate_concepts中的已入库上层概念ID，"
-                        "并在states或qualifiers中保留原对象相对上层概念的具体差异；"
-                        "无法可靠满足时改用EXPRESSION_ONLY，禁止提出新的原子对象概念。"
+                        "若错误涉及long-tail：语义等价的已入库候选可用ATOMIC；"
+                        "回退到单个上层概念时用DECOMPOSED，并在embedded_states或qualifiers中"
+                        "保留具体差异；由多个已入库概念完整组成时无需强造状态；"
+                        "无法可靠满足时用EXPRESSION_ONLY。禁止提出新的原子对象概念。"
                     )
                     messages.append({
                         "role": "user",
@@ -199,6 +208,44 @@ class SemanticAlignmentRunner:
             "errors": errors,
             "raw_outputs": raw_outputs,
         }
+        if len(package.get("cases") or []) > 1:
+            split_results = [
+                self._process({
+                    **package,
+                    "package_id": f"{package['package_id']}__{case['object_id']}",
+                    "parent_package_id": package["package_id"],
+                    "cases": [case],
+                })
+                for case in package["cases"]
+            ]
+            if all(row.get("status") == "success" for row in split_results):
+                result = {
+                    "package_id": package["package_id"],
+                    "package_type": package["package_type"],
+                    "tier": package["tier"],
+                    "memory_version": package["memory_version"],
+                    "status": "success",
+                    "attempt_count": max_attempts,
+                    "split_attempt_count": sum(int(row.get("attempt_count") or 0) for row in split_results),
+                    "fallback_mode": "split_cases",
+                    "prompt_fingerprint": prompt_fingerprint,
+                    "covered_item_count": len(package["cases"]),
+                    "output": {
+                        "interpretations": [
+                            interpretation
+                            for row in split_results
+                            for interpretation in row["output"]["interpretations"]
+                        ],
+                    },
+                }
+            else:
+                result["split_failures"] = [
+                    {
+                        "package_id": row.get("package_id"),
+                        "errors": row.get("errors") or [],
+                    }
+                    for row in split_results if row.get("status") != "success"
+                ]
         try:
             self._store(package, result)
         except Exception as error:
@@ -249,14 +296,16 @@ class SemanticAlignmentRunner:
                     raise ValueError("duplicate core object")
                 seen_core.add(key)
             if cases[row["object_id"]].get("long_tail_fallback_required"):
-                if decision not in {"DECOMPOSED", "EXPRESSION_ONLY"}:
+                if decision not in {"ATOMIC", "DECOMPOSED", "EXPRESSION_ONLY"}:
                     raise ValueError(
-                        "long-tail object must use an upper-concept decomposition or expression-only fallback"
+                        "invalid long-tail decision"
                     )
+                if decision == "ATOMIC" and not any(core.get("concept_id") for core in core_objects):
+                    raise ValueError("long-tail atomic match must reference an approved equivalent concept")
                 if decision == "DECOMPOSED":
                     if not any(core.get("concept_id") for core in core_objects):
                         raise ValueError("long-tail decomposition must reference an approved upper concept")
-                    if not embedded_states and not qualifiers:
+                    if len(core_objects) == 1 and not embedded_states and not qualifiers:
                         raise ValueError("long-tail decomposition must preserve the specific difference as state or qualifier")
             if len(embedded_states) > 8:
                 raise ValueError("an interpretation supports at most eight embedded states")
