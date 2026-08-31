@@ -286,7 +286,13 @@ class SemanticAlignmentRunner:
                 # whole package payload.
                 if result.get("package_id") != package["package_id"]:
                     return None
-                if result.get("prompt_fingerprint") != self._prompt_fingerprint(self.prompt):
+                compatible = {
+                    str(value)
+                    for value in self.prompt.get("compatible_prompt_fingerprints") or []
+                }
+                if result.get("prompt_fingerprint") not in {
+                    self._prompt_fingerprint(self.prompt), *compatible,
+                }:
                     return None
             elif result.get("input_fingerprint") != self._fingerprint(package, self.prompt):
                 return None

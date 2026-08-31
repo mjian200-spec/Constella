@@ -83,6 +83,27 @@ def test_runner_caches_valid_interpretation():
     assert client.calls == 1
 
 
+def test_runner_can_reuse_explicitly_compatible_prompt_cache():
+    client = FakeClient()
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        runner.run([_package()])
+        previous = runner._prompt_fingerprint(runner.prompt)
+        runner.prompt = {
+            **runner.prompt,
+            "version": "future",
+            "system": runner.prompt["system"] + "\n新增纠错示例。",
+            "compatible_prompt_fingerprints": [previous],
+        }
+        _results, report = runner.run([_package()])
+
+    assert report["cached_count"] == 1
+    assert client.calls == 1
+
+
 def test_runner_processes_high_confidence_tier_before_lower_tier():
     client = FakeClient()
     with tempfile.TemporaryDirectory() as directory:
