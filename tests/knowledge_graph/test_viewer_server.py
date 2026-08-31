@@ -35,6 +35,23 @@ class FakeGraphData:
 
 
 class KnowledgeGraphViewerTests(unittest.TestCase):
+    def test_file_data_prefers_registered_lifecycle_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registered = {"concept_id": "approved", "canonical_name": "已入库概念"}
+            candidate = {"concept_id": "candidate", "canonical_name": "候选概念"}
+            (root / "registered_concepts.jsonl").write_text(
+                json.dumps(registered, ensure_ascii=False), encoding="utf-8",
+            )
+            (root / "registered_relations.jsonl").write_text("", encoding="utf-8")
+            (root / "concepts.jsonl").write_text(
+                json.dumps(candidate, ensure_ascii=False), encoding="utf-8",
+            )
+
+            data = FileKnowledgeGraphData(root, "test")
+
+            self.assertEqual(["approved"], list(data.concepts))
+
     def test_file_data_serves_final_alignment_outputs_without_neo4j(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -445,20 +445,26 @@ class KnowledgeGraphData:
 class FileKnowledgeGraphData:
     """Read-only viewer backed by JSONL artifacts (no Neo4j).
 
-    Concept inputs are discovered in order: final_concepts.jsonl /
-    final_concept_relations.jsonl, then concepts.jsonl / concept_relations.jsonl,
-    then rebuilt from object_semantics*.jsonl / state_semantics*.jsonl candidate
-    payloads when only alignment outputs are available.
+    Concept inputs are discovered in order: lifecycle registered snapshots,
+    final concept-layer outputs, then generic concept-layer outputs. When none
+    exist, concepts are rebuilt from alignment candidate payloads.
     """
 
     def __init__(self, concept_dir: str | Path, dataset_id: str) -> None:
         directory = Path(concept_dir)
-        concept_path = directory / "final_concepts.jsonl"
-        relation_path = directory / "final_concept_relations.jsonl"
-        if not concept_path.is_file():
-            concept_path = directory / "concepts.jsonl"
-        if not relation_path.is_file():
-            relation_path = directory / "concept_relations.jsonl"
+        candidates = [
+            ("registered_concepts.jsonl", "registered_relations.jsonl"),
+            ("final_concepts.jsonl", "final_concept_relations.jsonl"),
+            ("concepts.jsonl", "concept_relations.jsonl"),
+        ]
+        concept_path, relation_path = next(
+            (
+                (directory / concept_name, directory / relation_name)
+                for concept_name, relation_name in candidates
+                if (directory / concept_name).is_file()
+            ),
+            (directory / "concepts.jsonl", directory / "concept_relations.jsonl"),
+        )
         self.dataset_id = dataset_id
         if concept_path.is_file():
             raw_concepts = _read_jsonl(concept_path)
