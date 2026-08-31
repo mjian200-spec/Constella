@@ -118,6 +118,17 @@ class MemorySnapshot:
                 if by_id[target_id].get("registration_status") != "APPROVED":
                     raise ValueError("concept merge target must be approved")
                 target = by_id[target_id]
+                occupied_terms = {
+                    normalize_text(str(term))
+                    for other_id, other in by_id.items()
+                    if other_id not in {concept_id, target_id}
+                    and other.get("registration_status") == "APPROVED"
+                    for term in [
+                        other.get("canonical_name") or "",
+                        *(other.get("aliases") or []),
+                    ]
+                    if normalize_text(str(term))
+                }
                 aliases = [
                     *list(target.get("aliases") or []),
                     str(source.get("canonical_name") or ""),
@@ -127,7 +138,9 @@ class MemorySnapshot:
                 canonical_key = normalize_text(str(target.get("canonical_name") or ""))
                 target["aliases"] = list(dict.fromkeys(
                     value for value in aliases
-                    if value and normalize_text(str(value)) != canonical_key
+                    if value
+                    and normalize_text(str(value)) != canonical_key
+                    and normalize_text(str(value)) not in occupied_terms
                 ))
                 for field in ("evidence_ids", "source_package_ids", "source_seed_ids"):
                     target[field] = list(dict.fromkeys([

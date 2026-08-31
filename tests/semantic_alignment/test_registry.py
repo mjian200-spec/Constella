@@ -57,6 +57,33 @@ def test_approved_merge_removes_source_and_remaps_relations():
     assert memory.relations[0]["child_concept_id"] == "target"
 
 
+def test_approved_merge_does_not_steal_third_concept_term_as_alias():
+    concepts = [
+        {
+            "concept_id": "gmaw", "canonical_name": "GMAW", "aliases": [],
+            "type": "object", "registration_status": "APPROVED",
+        },
+        {
+            "concept_id": "long_name", "canonical_name": "熔化极气体保护焊",
+            "aliases": ["SGMAW"],
+        },
+        {
+            "concept_id": "sgmaw", "canonical_name": "SGMAW", "aliases": [],
+            "type": "object", "registration_status": "APPROVED",
+        },
+    ]
+
+    memory = MemorySnapshot.build(concepts, [], [{
+        "status": "APPROVED", "proposal_kind": "CONCEPT_MERGE",
+        "concept_id": "long_name", "target_concept_id": "gmaw",
+    }])
+    by_id = {row["concept_id"]: row for row in memory.concepts}
+
+    assert "熔化极气体保护焊" in by_id["gmaw"]["aliases"]
+    assert "SGMAW" not in by_id["gmaw"]["aliases"]
+    assert by_id["sgmaw"]["canonical_name"] == "SGMAW"
+
+
 def test_reviewed_alias_enters_next_memory_snapshot():
     concepts = [{
         "concept_id": "c1", "canonical_name": "电池组", "aliases": [],
