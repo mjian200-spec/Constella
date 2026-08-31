@@ -30,6 +30,9 @@ def test_stage_plan_pairs_each_tier_with_its_own_admission_and_ends_with_final_r
     assert module.STAGE_PLAN == (
         ("INITIAL", None), ("H1", "H1"), ("H2", "H2"), ("H3", "H3"), (None, None),
     )
+    assert module.selected_stage_plan(1) == (("INITIAL", None),)
+    assert module.selected_stage_plan(3) == module.STAGE_PLAN[:3]
+    assert module.selected_stage_plan(5) == module.STAGE_PLAN
 
 
 def test_final_review_prompt_schema_stays_compatible_with_admission_validation():

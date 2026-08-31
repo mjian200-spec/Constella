@@ -42,6 +42,12 @@ STAGE_PLAN: tuple[tuple[str, str | None], ...] = (
 )
 
 
+def selected_stage_plan(max_cycles: int) -> tuple[tuple[str, str | None], ...]:
+    if not 1 <= max_cycles <= len(STAGE_PLAN):
+        raise ValueError(f"max_cycles must be between 1 and {len(STAGE_PLAN)}")
+    return STAGE_PLAN[:max_cycles]
+
+
 def _distribution(rows: list[dict[str, Any]], field: str) -> dict[str, int]:
     return dict(sorted(Counter(str(row.get(field) or "UNKNOWN") for row in rows).items()))
 
@@ -398,7 +404,10 @@ def main() -> int:
     )
     parser.add_argument("--config-dir", default=str(ROOT / "configs" / "concept_layer"))
     parser.add_argument("--model-key", default="qwen3_8_27b")
-    parser.add_argument("--max-cycles", type=int, default=6)
+    parser.add_argument(
+        "--max-cycles", type=int, default=len(STAGE_PLAN),
+        help="Stop after this lifecycle round (1-5); use --resume to continue later.",
+    )
     parser.add_argument("--admission-limit", type=int, help="Smoke-test only: limit each admission pass.")
     parser.add_argument("--object-limit", type=int, help="Smoke-test only: limit LLM object packages.")
     parser.add_argument("--proposal-threshold", type=int, default=1)
@@ -414,11 +423,10 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if args.max_cycles < 5:
-        parser.error(
-            "--max-cycles must be at least 5: initial catalog, H1/H2/H3 aligned "
-            "admission stages, and the final deferred re-review"
-        )
+    try:
+        stage_plan = selected_stage_plan(args.max_cycles)
+    except ValueError as error:
+        parser.error(str(error))
     if args.admission_limit is not None and args.admission_limit < 1:
         parser.error("--admission-limit must be positive")
     if args.object_limit is not None and args.object_limit < 1:
@@ -471,7 +479,7 @@ def main() -> int:
     cycles: list[dict[str, Any]] = []
     priority_manifest = output / "object_priority_manifest.jsonl"
     stop_reason = "MAX_CYCLES_REACHED"
-    for cycle_number, (admission_source, alignment_tier) in enumerate(STAGE_PLAN, start=1):
+    for cycle_number, (admission_source, alignment_tier) in enumerate(stage_plan, start=1):
         cycle_dir = output / f"cycle_{cycle_number:03d}"
         final_pass = admission_source is None
         alignment_report = None
