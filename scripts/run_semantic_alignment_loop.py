@@ -21,6 +21,7 @@ from constella.semantic_alignment import (  # noqa: E402
     build_initial_pending_concepts,
     build_pending_concepts_from_proposals,
     load_alignment_inputs,
+    require_complete_alignment,
 )
 from constella.semantic_alignment.assembly import write_json, write_jsonl  # noqa: E402
 from constella.semantic_alignment.evaluation import read_jsonl  # noqa: E402
@@ -135,7 +136,9 @@ def _run_alignment(
     suffix = _alignment_suffix(args.object_limit)
     report_path = output_dir / f"alignment_report{suffix}.json"
     proposals_path = output_dir / f"alignment_proposals{suffix}.jsonl"
-    return json.loads(report_path.read_text(encoding="utf-8")), read_jsonl(proposals_path)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    require_complete_alignment(report)
+    return report, read_jsonl(proposals_path)
 
 
 def _summary(

@@ -19,6 +19,7 @@ from .lifecycle import (
     audit_concept_library,
     collect_unprocessed_objects,
     rank_by_occurrence,
+    require_complete_alignment,
 )
 from .packages import AlignmentInputs, SemanticPackageBuilder, load_alignment_inputs
 from .registry import ConceptRegistry, MemorySnapshot
@@ -49,4 +50,5 @@ __all__ = [
     "build_pending_concepts_from_proposals",
     "load_alignment_inputs",
     "rank_by_occurrence",
+    "require_complete_alignment",
 ]

@@ -173,6 +173,19 @@ def audit_concept_library(memory: MemorySnapshot) -> dict[str, Any]:
     }
 
 
+def require_complete_alignment(report: dict[str, Any]) -> None:
+    runner = report.get("runner") or {}
+    failed_count = int(runner.get("failed_count") or 0)
+    selected_count = int(runner.get("selected_package_count") or 0)
+    success_count = int(runner.get("success_count") or 0)
+    if failed_count or success_count != selected_count:
+        raise RuntimeError(
+            "semantic alignment is incomplete: "
+            f"{success_count}/{selected_count} packages succeeded, {failed_count} failed; "
+            "resume the lifecycle to retry failed packages"
+        )
+
+
 def _hierarchy_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
     cycles: set[tuple[str, ...]] = set()
     visited: set[str] = set()
@@ -210,4 +223,5 @@ __all__ = [
     "audit_concept_library",
     "collect_unprocessed_objects",
     "rank_by_occurrence",
+    "require_complete_alignment",
 ]
