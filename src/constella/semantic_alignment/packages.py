@@ -239,7 +239,7 @@ class SemanticPackageBuilder:
             exact = self.registry.resolve_exact(item["name"], concept_type=ConceptType.OBJECT)
             signals = sum(bool(pattern.search(item["name"])) for pattern in _STRUCTURE_PATTERNS)
             coverage = self.registry.lexical_coverage(item["name"], concept_type=ConceptType.OBJECT)
-            if exact["status"] == AlignmentStatus.MATCHED and signals == 0:
+            if exact["status"] == AlignmentStatus.MATCHED:
                 self.mechanical_interpretations[object_id] = {
                     "object_id": object_id,
                     "decision": "ATOMIC",

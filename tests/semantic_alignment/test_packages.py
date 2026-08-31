@@ -118,15 +118,12 @@ def test_low_frequency_exact_match_is_not_forced_into_long_tail_fallback():
         }],
         context_packages={}, units={},
     )
-    cases = [
-        case
-        for package in SemanticPackageBuilder(inputs).object_alignment_packages()
-        for case in package["cases"]
-    ]
+    builder = SemanticPackageBuilder(inputs)
 
-    assert len(cases) == 1
-    assert cases[0]["exact_resolution"]["status"] == "MATCHED"
-    assert cases[0]["long_tail_fallback_required"] is False
+    assert builder.object_alignment_packages() == []
+    interpretation = next(iter(builder.mechanical_interpretations.values()))
+    assert interpretation["decision"] == "ATOMIC"
+    assert interpretation["core_objects"][0]["concept_id"] == "combined"
 
 
 def test_unapproved_exact_match_id_is_not_leaked_to_object_llm_package():
