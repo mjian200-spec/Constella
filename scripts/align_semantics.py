@@ -32,8 +32,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _output_suffix(args: argparse.Namespace) -> str:
+    tier_suffix = f"_{str(args.tier).lower()}" if args.tier else ""
     if args.object_limit is not None:
-        return f"_trial_limit_{args.object_limit}"
+        return f"{tier_suffix}_trial_limit_{args.object_limit}"
+    if args.tier:
+        return tier_suffix
     if args.max_tier != PackageTier.H3:
         return f"_through_{str(args.max_tier).lower()}"
     return ""
@@ -54,6 +57,11 @@ def main() -> int:
         "--max-tier", choices=[str(value) for value in PackageTier], default=PackageTier.H1,
         help="Stop at this confidence tier. Default H1 enforces review before complex packages.",
     )
+    parser.add_argument(
+        "--tier", choices=["H1", "H2", "H3"],
+        help="Process exactly one frozen priority tier; overrides --max-tier selection.",
+    )
+    parser.add_argument("--priority-manifest", help="Frozen JSONL object priority assignments.")
     parser.add_argument("--object-limit", type=int, help="Limit selected LLM packages; writes trial-suffixed outputs.")
     parser.add_argument("--proposal-threshold", type=int, default=5)
     parser.add_argument("--candidates-per-object", type=int, default=6)
@@ -67,16 +75,25 @@ def main() -> int:
     inputs = load_alignment_inputs(args.rule_output_dir, args.concept_output_dir, args.context_output_dir)
     reviewed_memory = _read_jsonl(Path(args.reviewed_memory)) if args.reviewed_memory else []
     memory = MemorySnapshot.build(inputs.concepts, inputs.relations, reviewed_memory)
-    builder = SemanticPackageBuilder(inputs, memory=memory)
+    priority_rows = _read_jsonl(Path(args.priority_manifest)) if args.priority_manifest else []
+    priority_assignments = {
+        str(row["object_id"]): row for row in priority_rows
+    } if args.priority_manifest else None
+    builder = SemanticPackageBuilder(
+        inputs, memory=memory, priority_assignments=priority_assignments,
+    )
     packages = builder.object_alignment_packages(
         candidates_per_object=args.candidates_per_object,
         objects_per_package=args.objects_per_package,
         max_package_chars=args.max_package_chars,
     )
-    eligible = [
-        package for package in packages
-        if TIER_ORDER[PackageTier(package["tier"])] <= TIER_ORDER[PackageTier(args.max_tier)]
-    ]
+    eligible = (
+        [package for package in packages if package["tier"] == args.tier]
+        if args.tier else [
+            package for package in packages
+            if TIER_ORDER[PackageTier(package["tier"])] <= TIER_ORDER[PackageTier(args.max_tier)]
+        ]
+    )
     selected_packages = eligible[:args.object_limit] if args.object_limit is not None else eligible
     dry_report = {
         "schema_version": "semantic_alignment.v2",
@@ -100,6 +117,7 @@ def main() -> int:
             "max_package_chars": args.max_package_chars,
         },
         "max_tier": str(args.max_tier),
+        "selected_tier": args.tier,
         "selected_llm_package_count": len(selected_packages),
         **builder.package_report(packages),
         "input_manifest": inputs.input_manifest,
@@ -118,7 +136,7 @@ def main() -> int:
             workers=workers,
         )
         results, run_report = runner.run(
-            selected_packages, max_tier=args.max_tier, refresh=args.refresh,
+            selected_packages, max_tier=args.tier or args.max_tier, refresh=args.refresh,
         )
     else:
         results = []
@@ -131,14 +149,14 @@ def main() -> int:
             "cached_count": 0,
             "protocol_success_rate": 1.0,
             "decision_coverage_rate": 1.0,
-            "max_tier": str(args.max_tier),
+            "max_tier": str(args.tier or args.max_tier),
             "tier_reports": [],
             "elapsed_seconds": 0.0,
         }
     selected_object_ids = builder.selected_object_ids(
         selected_packages,
         include_mechanical=args.object_limit is None,
-        max_tier=args.max_tier,
+        max_tier=args.tier or args.max_tier,
     )
     object_rows, state_rows, proposal_rows, coverage_rows, assembly_report = assemble_semantics(
         builder,

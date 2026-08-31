@@ -98,10 +98,17 @@ _STRUCTURE_PATTERNS = (
 class SemanticPackageBuilder:
     """Collect sources, score object interpretations, and build tier-homogeneous packages."""
 
-    def __init__(self, inputs: AlignmentInputs, *, memory: MemorySnapshot | None = None) -> None:
+    def __init__(
+        self,
+        inputs: AlignmentInputs,
+        *,
+        memory: MemorySnapshot | None = None,
+        priority_assignments: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self.inputs = inputs
         self.memory = memory or MemorySnapshot.build(inputs.concepts, inputs.relations)
         self.registry = ConceptRegistry(self.memory)
+        self.priority_assignments = priority_assignments
         self._candidate_cache: dict[tuple[str, int], list[dict[str, Any]]] = {}
         self.source_occurrence_count = 0
         self.state_rows, self.object_rows = self._collect_sources()
@@ -273,9 +280,28 @@ class SemanticPackageBuilder:
                     "exact_resolution": exact,
                 })
 
-        ranked = rank_by_occurrence(
-            unresolved, count_field="occurrence_count", identity_field="candidate_id",
-        )
+        if self.priority_assignments is None:
+            ranked = rank_by_occurrence(
+                unresolved, count_field="occurrence_count", identity_field="candidate_id",
+            )
+        else:
+            missing = sorted(
+                row["object_id"] for row in unresolved
+                if row["object_id"] not in self.priority_assignments
+            )
+            if missing:
+                raise ValueError(
+                    f"priority manifest misses {len(missing)} unresolved objects; first={missing[0]}"
+                )
+            ranked = []
+            for row in unresolved:
+                assignment = self.priority_assignments[row["object_id"]]
+                ranked.append({
+                    **row,
+                    "rank_confidence": str(assignment["rank_confidence"]),
+                    "occurrence_rank": int(assignment["occurrence_rank"]),
+                    "rank_population": int(assignment["rank_population"]),
+                })
         tier_by_confidence = {
             RankConfidence.HIGH: PackageTier.H1,
             RankConfidence.MEDIUM: PackageTier.H2,
@@ -283,8 +309,9 @@ class SemanticPackageBuilder:
         }
         for row in ranked:
             row["tier"] = tier_by_confidence[row["rank_confidence"]]
+            population = int(row.get("rank_population") or len(ranked))
             row["confidence"] = round(
-                1 - (int(row["occurrence_rank"]) - 1) / len(ranked), 4,
+                1 - (int(row["occurrence_rank"]) - 1) / population, 4,
             )
         return sorted([*mechanical, *ranked], key=lambda row: (
             TIER_ORDER[PackageTier(row["tier"])], -float(row["confidence"]),

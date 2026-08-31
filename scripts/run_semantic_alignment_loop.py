@@ -16,6 +16,8 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from constella.semantic_alignment import (  # noqa: E402
     MemorySnapshot,
+    PackageTier,
+    SemanticPackageBuilder,
     SerialConceptAdmissionRunner,
     audit_concept_library,
     build_initial_pending_concepts,
@@ -92,8 +94,9 @@ def _write_library_snapshot(directory: Path, memory: MemorySnapshot) -> None:
     write_jsonl(directory / "remaining_candidate_catalog.jsonl", candidates)
 
 
-def _alignment_suffix(object_limit: int | None) -> str:
-    return f"_trial_limit_{object_limit}" if object_limit is not None else ""
+def _alignment_suffix(tier: str, object_limit: int | None) -> str:
+    suffix = f"_{tier.lower()}"
+    return f"{suffix}_trial_limit_{object_limit}" if object_limit is not None else suffix
 
 
 def _run_alignment(
@@ -102,6 +105,8 @@ def _run_alignment(
     concept_dir: Path,
     reviewed_memory: Path,
     output_dir: Path,
+    tier: str,
+    priority_manifest: Path,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     command = [
         sys.executable, str(ROOT / "scripts" / "align_semantics.py"),
@@ -112,7 +117,8 @@ def _run_alignment(
         "--reviewed-memory", str(reviewed_memory),
         "--config-dir", args.config_dir,
         "--model-key", args.model_key,
-        "--max-tier", "H3",
+        "--tier", tier,
+        "--priority-manifest", str(priority_manifest),
         "--proposal-threshold", str(args.proposal_threshold),
         "--candidates-per-object", str(args.candidates_per_object),
         "--objects-per-package", str(args.objects_per_package),
@@ -133,7 +139,7 @@ def _run_alignment(
             f"semantic alignment failed with {completed.returncode}; "
             f"see {output_dir / 'process_stderr.log'}"
         )
-    suffix = _alignment_suffix(args.object_limit)
+    suffix = _alignment_suffix(tier, args.object_limit)
     report_path = output_dir / f"alignment_report{suffix}.json"
     proposals_path = output_dir / f"alignment_proposals{suffix}.jsonl"
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -243,8 +249,8 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if args.max_cycles < 1:
-        parser.error("--max-cycles must be positive")
+    if args.max_cycles < 4:
+        parser.error("--max-cycles must be at least 4: initial/H1/H2/H3 admission stages")
     if args.admission_limit is not None and args.admission_limit < 1:
         parser.error("--admission-limit must be positive")
     if args.object_limit is not None and args.object_limit < 1:
@@ -279,9 +285,15 @@ def main() -> int:
         (Path(args.config_dir) / "models.yaml").read_text(encoding="utf-8")
     )["models"]
     cycles: list[dict[str, Any]] = []
-    reviewed_concept_ids: set[str] = set()
+    reviewed_concept_ids: set[str] = {
+        str(row["concept_id"]) for row in events if row.get("concept_id")
+    }
+    stage_plan: tuple[tuple[str, str | None], ...] = (
+        ("INITIAL", "H1"), ("H1", "H2"), ("H2", "H3"), ("H3", None),
+    )
+    priority_manifest = output / "object_priority_manifest.jsonl"
     stop_reason = "MAX_CYCLES_REACHED"
-    for cycle_number in range(1, args.max_cycles + 1):
+    for cycle_number, (admission_source, alignment_tier) in enumerate(stage_plan, start=1):
         cycle_dir = output / f"cycle_{cycle_number:03d}"
         catalog = _catalog_with_candidates(catalog, pending)
         event_count_before = len(events)
@@ -315,6 +327,35 @@ def main() -> int:
             })
             break
 
+        if not priority_manifest.is_file():
+            priority_builder = SemanticPackageBuilder(inputs, memory=memory)
+            priority_rows = [{
+                "object_id": row["object_id"],
+                "name": row["name"],
+                "frequency": row["frequency"],
+                "tier": str(row["tier"]),
+                "rank_confidence": str(row["rank_confidence"]),
+                "occurrence_rank": row["occurrence_rank"],
+                "rank_population": row.get("rank_population"),
+            } for row in priority_builder.scored_cases if row["tier"] != PackageTier.H0]
+            write_jsonl(priority_manifest, priority_rows)
+
+        if alignment_tier is None:
+            cycle_report = {
+                "cycle": cycle_number,
+                "admission_source": admission_source,
+                "alignment_tier": None,
+                "new_memory_event_count": len(events) - event_count_before,
+                "admission": admission_report,
+                "library_audit": library_audit,
+                "alignment": None,
+                "next_pending_concept_count": 0,
+            }
+            cycles.append(cycle_report)
+            write_json(cycle_dir / "cycle_report.json", cycle_report)
+            stop_reason = "ALL_TIERS_COMPLETED"
+            break
+
         concept_input = cycle_dir / "concept_input"
         _write_concept_input(concept_input, catalog, inputs.relations)
         alignment_report, proposals = _run_alignment(
@@ -322,6 +363,8 @@ def main() -> int:
             concept_dir=concept_input,
             reviewed_memory=output / "reviewed_memory.jsonl",
             output_dir=cycle_dir / "alignment",
+            tier=alignment_tier,
+            priority_manifest=priority_manifest,
         )
         pending = build_pending_concepts_from_proposals(
             proposals, inputs, memory,
@@ -330,6 +373,8 @@ def main() -> int:
         write_jsonl(cycle_dir / "next_pending_concepts.jsonl", pending)
         cycle_report = {
             "cycle": cycle_number,
+            "admission_source": admission_source,
+            "alignment_tier": alignment_tier,
             "new_memory_event_count": len(events) - event_count_before,
             "admission": admission_report,
             "library_audit": library_audit,
@@ -339,12 +384,6 @@ def main() -> int:
         }
         cycles.append(cycle_report)
         write_json(cycle_dir / "cycle_report.json", cycle_report)
-        if not pending:
-            stop_reason = "NO_PENDING_CONCEPTS"
-            break
-        if len(events) == event_count_before:
-            stop_reason = "NO_NEW_REGISTRATIONS"
-            break
 
     final_memory = MemorySnapshot.build(catalog, inputs.relations, events)
     final_report = _summary(

@@ -90,6 +90,45 @@ def test_unprocessed_objects_are_banded_by_rank_one_five_twenty_five():
     )
 
 
+def test_frozen_priorities_do_not_shift_after_a_concept_is_registered():
+    rules = [{
+        "id": f"r{index}", "conditions": [],
+        "antecedents": [{"id": f"s{index}", "object": f"对象{index:02d}", "raw_state": "稳定"}],
+        "consequents": [],
+    } for index in range(31)]
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=rules, context_packages={}, units={},
+    )
+    initial = SemanticPackageBuilder(inputs, memory=MemorySnapshot.build([], []))
+    assignments = {
+        row["object_id"]: {
+            "rank_confidence": str(row["rank_confidence"]),
+            "occurrence_rank": row["occurrence_rank"],
+            "rank_population": row["rank_population"],
+        }
+        for row in initial.scored_cases
+    }
+    promoted = [{
+        "concept_id": "promoted", "canonical_name": "对象00", "aliases": [],
+        "type": "object", "registration_status": "APPROVED",
+    }]
+    rebuilt = SemanticPackageBuilder(
+        inputs,
+        memory=MemorySnapshot.build(promoted, []),
+        priority_assignments=assignments,
+    )
+
+    assert any(
+        interpretation["core_objects"][0]["concept_id"] == "promoted"
+        for interpretation in rebuilt.mechanical_interpretations.values()
+    )
+    initial_tiers = {row["object_id"]: row["tier"] for row in initial.scored_cases}
+    assert all(
+        row["tier"] == initial_tiers[row["object_id"]]
+        for row in rebuilt.scored_cases if row["tier"] != PackageTier.H0
+    )
+
+
 def test_object_alignment_input_pairs_each_object_with_its_rule_states():
     builder = SemanticPackageBuilder(_inputs())
     cases = [case for package in builder.object_alignment_packages() for case in package["cases"]]
