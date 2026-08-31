@@ -139,7 +139,8 @@ class SemanticAlignmentRunner:
         ]
         errors: list[str] = []
         raw_outputs: list[str] = []
-        for attempt in range(1, 3):
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             content: str | None = None
             try:
                 response = self.client.complete(
@@ -173,12 +174,18 @@ class SemanticAlignmentRunner:
                 return result
             except Exception as error:
                 errors.append(f"{type(error).__name__}: {error}")
-                if attempt == 1:
+                if attempt < max_attempts:
                     if content is not None:
                         messages.append({"role": "assistant", "content": content})
+                    correction = (
+                        "若错误涉及long-tail：该对象只能使用DECOMPOSED或EXPRESSION_ONLY。"
+                        "DECOMPOSED必须引用candidate_concepts中的已入库上层概念ID，"
+                        "并在states或qualifiers中保留原对象相对上层概念的具体差异；"
+                        "无法可靠满足时改用EXPRESSION_ONLY，禁止提出新的原子对象概念。"
+                    )
                     messages.append({
                         "role": "user",
-                        "content": f"输出不符合协议：{error}。只返回修正后的JSON，不要解释。",
+                        "content": f"输出不符合协议：{error}。{correction}只返回修正后的完整JSON，不要解释。",
                     })
         result = {
             "package_id": package["package_id"],
@@ -186,7 +193,7 @@ class SemanticAlignmentRunner:
             "tier": package["tier"],
             "memory_version": package["memory_version"],
             "status": "failed",
-            "attempt_count": 2,
+            "attempt_count": max_attempts,
             "prompt_fingerprint": prompt_fingerprint,
             "covered_item_count": 0,
             "errors": errors,

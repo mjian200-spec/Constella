@@ -117,7 +117,7 @@ def test_candidate_from_another_case_is_rejected():
         results, report = runner.run([package])
     assert results[0]["status"] == "failed"
     assert report["protocol_success_rate"] == 0.0
-    assert client.calls == 2
+    assert client.calls == 3
 
 
 def test_retry_includes_invalid_output_and_specific_validation_error():
@@ -162,6 +162,8 @@ def test_long_tail_object_cannot_propose_a_new_atomic_object():
         results, _report = runner.run([_package(long_tail=True)])
 
     assert results[0]["status"] == "failed"
+    assert results[0]["attempt_count"] == 3
+    assert client.calls == 3
 
 
 def test_long_tail_object_can_fallback_to_upper_concept_and_state():
