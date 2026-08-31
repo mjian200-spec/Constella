@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .lifecycle import RankConfidence, rank_by_occurrence
+from .lifecycle import LONG_TAIL_MAX_OCCURRENCE, RankConfidence, rank_by_occurrence
 from .models import AlignmentStatus, ConceptType, PackageTier, TIER_ORDER
 from .registry import CharNgramIndex, ConceptRegistry, MemorySnapshot, normalize_text, stable_id
 
@@ -135,6 +135,10 @@ class SemanticPackageBuilder:
                 "rank_confidence": source["rank_confidence"],
                 "occurrence_rank": source["occurrence_rank"],
                 "rank_population": source.get("rank_population"),
+                "long_tail_fallback_required": (
+                    source["rank_confidence"] == RankConfidence.LOW
+                    and int(source["frequency"]) <= LONG_TAIL_MAX_OCCURRENCE
+                ),
                 "lexical_coverage": source["lexical_coverage"],
                 "structure_signal_count": source["structure_signal_count"],
                 "exact_resolution": self._formal_exact_resolution(source["exact_resolution"]),

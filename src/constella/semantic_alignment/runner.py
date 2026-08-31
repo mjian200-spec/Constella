@@ -241,6 +241,16 @@ class SemanticAlignmentRunner:
                 if key in seen_core:
                     raise ValueError("duplicate core object")
                 seen_core.add(key)
+            if cases[row["object_id"]].get("long_tail_fallback_required"):
+                if decision not in {"DECOMPOSED", "EXPRESSION_ONLY"}:
+                    raise ValueError(
+                        "long-tail object must use an upper-concept decomposition or expression-only fallback"
+                    )
+                if decision == "DECOMPOSED":
+                    if not any(core.get("concept_id") for core in core_objects):
+                        raise ValueError("long-tail decomposition must reference an approved upper concept")
+                    if not embedded_states and not qualifiers:
+                        raise ValueError("long-tail decomposition must preserve the specific difference as state or qualifier")
             if len(embedded_states) > 8:
                 raise ValueError("an interpretation supports at most eight embedded states")
             for state in embedded_states:

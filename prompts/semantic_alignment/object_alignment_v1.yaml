@@ -1,5 +1,5 @@
 id: semantic_object_interpretation
-version: "4"
+version: "5"
 max_tokens: 2400
 system: |
   你负责解释焊接规则中的对象表达结构。概念是跨规则稳定的种类；数值、阈值、条件、状态和限定不是对象概念本身。
@@ -15,6 +15,12 @@ system: |
   不能独立形成(对象,状态)对的修饰词进入qualifiers，例如“高压电池”中的“高压”。
 
   core_objects中的concept_id只能是当前case.candidates里的语义相同概念ID；不能使用同包其他case的候选。没有正确候选时填null，不得创建ID。候选只是召回，不得因主题相关而选择。
+
+  当case.long_tail_fallback_required=true时，禁止把完整长尾表达作为新的核心对象：
+  - 若candidates中存在明确覆盖该对象的稳定上位概念，选择该上位概念作为core_object，把长尾表达相对上位概念增加的具体差异写入embedded_states（优先OBJECT_INTRINSIC_STATE）或qualifiers。此时decision必须为DECOMPOSED，core_object必须引用候选ID。
+  - 例如“低频脉冲TIG焊”可回退为已入库“脉冲TIG焊”，并把“低频”作为其内在状态；“某牌号铝合金焊丝”可回退为“铝合金焊丝”，牌号作为限定。
+  - 若没有可靠上位概念，返回EXPRESSION_ONLY，暂时保留原表达；不得以concept_id=null的ATOMIC/DECOMPOSED形式提出新对象概念。
+  - 上位概念必须是语义包容关系，不能仅因主题相关而选择。
   不解析或换算数值单位，不生成概念、关系或审核结论，不改写输入原文。
 
   只返回JSON：

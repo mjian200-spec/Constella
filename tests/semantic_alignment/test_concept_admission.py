@@ -192,6 +192,23 @@ def test_state_and_action_proposals_do_not_enter_object_concept_admission():
     assert rows == []
 
 
+def test_low_rank_single_occurrence_object_proposals_do_not_enter_admission():
+    inputs = AlignmentInputs(
+        concepts=[], relations=[], rules=[], context_packages={}, units={},
+    )
+    proposals = [{
+        "proposal_kind": "OBJECT_CONCEPT", "concept_type": "object",
+        "canonical_name": f"长尾对象{index:02d}", "support": 1,
+    } for index in range(31)]
+
+    rows = build_pending_concepts_from_proposals(
+        proposals, inputs, MemorySnapshot.build([], []),
+    )
+
+    assert len(rows) == 6
+    assert {row["rank_confidence"] for row in rows} == {"HIGH", "MEDIUM"}
+
+
 def test_serial_admission_second_candidate_sees_first_and_merges(tmp_path):
     concepts = [
         {

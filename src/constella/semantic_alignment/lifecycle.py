@@ -23,6 +23,7 @@ class RankConfidence:
 
 
 RANK_WEIGHTS = (1, 5, 25)
+LONG_TAIL_MAX_OCCURRENCE = 5
 
 
 def rank_by_occurrence(

@@ -53,7 +53,7 @@ class CorrectingClient:
         return {"choices": [{"message": {"content": json.dumps(output, ensure_ascii=False)}}]}
 
 
-def _package(tier="H1", object_id="o1", candidates=None):
+def _package(tier="H1", object_id="o1", candidates=None, *, long_tail=False):
     return {
         "package_id": f"p_{tier}_{object_id}",
         "package_type": "object_alignment",
@@ -63,6 +63,7 @@ def _package(tier="H1", object_id="o1", candidates=None):
             "object_id": object_id,
             "name": "电流",
             "candidates": candidates or [],
+            "long_tail_fallback_required": long_tail,
         }],
     }
 
@@ -149,3 +150,38 @@ def test_expression_only_requires_empty_structure_arrays():
         )
         results, _report = runner.run([_package()])
     assert results[0]["status"] == "failed"
+
+
+def test_long_tail_object_cannot_propose_a_new_atomic_object():
+    client = FakeClient()
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, _report = runner.run([_package(long_tail=True)])
+
+    assert results[0]["status"] == "failed"
+
+
+def test_long_tail_object_can_fallback_to_upper_concept_and_state():
+    output = {"interpretations": [{
+        "object_id": "o1", "decision": "DECOMPOSED",
+        "core_objects": [{"text": "脉冲TIG焊", "concept_id": "parent"}],
+        "embedded_states": [{
+            "role": "OBJECT_INTRINSIC_STATE", "subject_text": "脉冲TIG焊",
+            "state_text": "低频",
+        }],
+        "qualifiers": [],
+    }]}
+    client = FakeClient(output)
+    with tempfile.TemporaryDirectory() as directory:
+        runner = SemanticAlignmentRunner(
+            {"fake": {"model": "fake"}}, "fake", Path("prompts/semantic_alignment"), directory,
+            client=client,
+        )
+        results, _report = runner.run([
+            _package(candidates=[{"id": "parent"}], long_tail=True),
+        ])
+
+    assert results[0]["status"] == "success"

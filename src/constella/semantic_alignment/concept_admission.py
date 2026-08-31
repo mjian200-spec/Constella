@@ -11,7 +11,12 @@ import yaml
 
 from constella.context_builder.llm_client import LLMClient
 
-from .lifecycle import LifecycleState, audit_concept_library, rank_by_occurrence
+from .lifecycle import (
+    LONG_TAIL_MAX_OCCURRENCE,
+    LifecycleState,
+    audit_concept_library,
+    rank_by_occurrence,
+)
 from .models import ConceptType, ProposalKind
 from .packages import AlignmentInputs
 from .registry import ConceptRegistry, MemorySnapshot, normalize_text, stable_id
@@ -239,7 +244,15 @@ def build_pending_concepts_from_proposals(
             ],
             "evidence": recall_concept_evidence(concept, inputs.units),
         })
-    return rank_by_occurrence(result, identity_field="candidate_id")
+    ranked = rank_by_occurrence(result, identity_field="candidate_id")
+    return [
+        row for row in ranked
+        if not (
+            row["rank_confidence"] == "LOW"
+            and int(row.get("occurrence_count") or 0) <= LONG_TAIL_MAX_OCCURRENCE
+            and row.get("candidate_origin") == "UNPROCESSED_OBJECT"
+        )
+    ]
 
 
 class SerialConceptAdmissionRunner:

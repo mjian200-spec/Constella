@@ -82,6 +82,12 @@ def test_unprocessed_objects_are_banded_by_rank_one_five_twenty_five():
     counts = Counter(str(row["tier"]) for row in builder.scored_cases)
 
     assert counts == {PackageTier.H1: 1, PackageTier.H2: 5, PackageTier.H3: 25}
+    cases = [case for package in builder.object_alignment_packages() for case in package["cases"]]
+    assert sum(case["long_tail_fallback_required"] for case in cases) == 25
+    assert all(
+        case["tier"] == PackageTier.H3
+        for case in cases if case["long_tail_fallback_required"]
+    )
 
 
 def test_unapproved_exact_match_id_is_not_leaked_to_object_llm_package():
