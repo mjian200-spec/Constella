@@ -1,6 +1,0 @@
-id: route_classifier
-version: 1
-system: "Classify only the supplied source units. Return unknown when evidence is insufficient."
-input_template: "{units}"
-output_schema: {type: object, properties: {labels: {type: array}}}
-examples: []

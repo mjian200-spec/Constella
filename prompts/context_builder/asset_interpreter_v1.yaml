@@ -1,6 +1,0 @@
-id: asset_interpreter
-version: 1
-system: "Describe only visible supplied asset evidence. Do not infer missing curves, regions, or conditions."
-input_template: "{asset}\n{candidate_parts}"
-output_schema: {type: object, properties: {result: {type: string}}}
-examples: []

@@ -96,13 +96,12 @@ context_builder ── document_graph.json
 - Rule-driven Concept Layer：qualification、enrichment、relation classifier、direct parent resolver。
 - Article discovery：package role、concept extractor、structure extractor、auditor。
 
-### 无代码引用的旧提示词
+### 已清理的旧提示词
 
-- `prompts/context_builder/ambiguity_resolver_v1.yaml`
-- `prompts/context_builder/asset_interpreter_v1.yaml`
-- `prompts/context_builder/route_classifier_v1.yaml`
-
-它们仍出现在早期 coding plan 中，建议迁入 `prompts/legacy/context_builder/` 并增加 README，或确认无复现实验依赖后删除。
+Context Builder 早期 coding plan 中的 `ambiguity_resolver_v1.yaml`、
+`asset_interpreter_v1.yaml` 和 `route_classifier_v1.yaml` 已确认无代码或测试引用并删除；
+现行路由使用 `route_classifier_v2.yaml`，资源理解使用
+`resource_textualizer_v1.yaml` 和 `formula_symbol_resolver_v1.yaml`。
 
 ## 6. 依赖与外部服务
 
