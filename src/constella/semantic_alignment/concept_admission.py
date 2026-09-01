@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any
+import time
+from typing import Any, Callable
 
 import yaml
 
@@ -383,7 +385,7 @@ def build_pending_concepts_from_proposals(
 
 
 class SerialConceptAdmissionRunner:
-    """Admit one concept at a time against the latest registered memory."""
+    """Commit concepts serially while speculatively reviewing independent work."""
 
     def __init__(
         self,
@@ -392,14 +394,20 @@ class SerialConceptAdmissionRunner:
         prompt_path: str | Path,
         output_dir: str | Path,
         *,
+        workers: int = 1,
         client=None,
         allow_defer: bool = True,
+        progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
+        if workers < 1:
+            raise ValueError("workers must be at least 1")
         self.models = models
         self.model_key = model_key
         self.output_dir = Path(output_dir)
+        self.workers = workers
         self.client = client or LLMClient(models)
         self.allow_defer = allow_defer
+        self.progress = progress
         self.prompt = yaml.safe_load(Path(prompt_path).read_text(encoding="utf-8"))
         if not isinstance(self.prompt, dict) or not {"id", "version", "system"} <= set(self.prompt):
             raise ValueError("invalid serial concept admission prompt")
@@ -414,6 +422,7 @@ class SerialConceptAdmissionRunner:
         refresh: bool = False,
         limit: int | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        started = time.monotonic()
         base_events = list(reviewed_memory or [])
         selected_candidates = candidates[:limit] if limit is not None else candidates
         checkpoint_path = self.output_dir / "admission_checkpoint.json"
@@ -448,6 +457,8 @@ class SerialConceptAdmissionRunner:
                 processed_ids.difference_update(failed_ids)
                 reviews = [row for row in reviews if row.get("decision") != "FAILED"]
             failed_candidates: list[dict[str, Any]] = []
+            runtime_stats = dict(saved.get("runtime_stats") or {})
+            fresh_required_ids = set(saved.get("fresh_required_ids") or [])
         else:
             events = list(base_events)
             concept_rows = [dict(row) for row in concepts]
@@ -456,51 +467,127 @@ class SerialConceptAdmissionRunner:
             reviews = []
             generated_count = 0
             failed_candidates = []
+            runtime_stats = {}
+            fresh_required_ids: set[str] = set()
+        batch_count = int(runtime_stats.get("batch_count") or 0)
+        cached_count = int(runtime_stats.get("cached_count") or 0)
+        submitted_count = int(runtime_stats.get("submitted_count") or 0)
+        stale_result_count = int(runtime_stats.get("stale_result_count") or 0)
+        elapsed_before = float(runtime_stats.get("elapsed_seconds") or 0.0)
+        elapsed_total = elapsed_before
         queued_names = {
             normalize_text(str(row.get("canonical_name") or ""))
             for row in concept_rows
             if normalize_text(str(row.get("canonical_name") or ""))
         }
         while queue:
-            candidate = queue.popleft()
-            candidate_id = str(candidate["concept_id"])
-            if candidate_id in processed_ids:
-                continue
-            memory = MemorySnapshot.build(concept_rows, relations, events)
-            if candidate_id not in {str(row["concept_id"]) for row in memory.concepts}:
-                processed_ids.add(candidate_id)
-                continue
-            registry = ConceptRegistry(memory)
-            package = self._package(candidate, registry, memory.version)
-            result = None if refresh else self._load_cached(package)
-            if result is None:
-                result = self._process(package)
-            review, event, generated = self._review(package, result, registry)
-            reviews.append(review)
-            if review["decision"] == "FAILED":
-                failed_candidates.append(candidate)
-            processed_ids.add(candidate_id)
-            if event is not None:
-                events.append(event)
-            for row in generated:
-                key = normalize_text(str(row.get("canonical_name") or ""))
-                if not key or key in queued_names:
+            batch_candidates: list[dict[str, Any]] = []
+            while queue and len(batch_candidates) < self.workers:
+                candidate = queue.popleft()
+                candidate_id = str(candidate["concept_id"])
+                if candidate_id in processed_ids:
                     continue
-                queued_names.add(key)
-                queue.append(row)
-                concept_rows.append({
-                    "concept_id": row["concept_id"],
-                    "canonical_name": row["canonical_name"],
-                    "aliases": row.get("aliases") or [],
-                    "definition": row.get("definition"),
-                    "definition_type": row.get("definition_type"),
-                    "evidence_ids": row.get("evidence_ids") or [],
-                    "source_package_ids": row.get("source_package_ids") or [],
-                    "source_seed_ids": row.get("source_seed_ids") or [],
-                    "origin_depth": row.get("origin_depth", 1),
-                    "registration_status": "CANDIDATE",
-                })
-                generated_count += 1
+                if batch_candidates and candidate_id in fresh_required_ids:
+                    queue.appendleft(candidate)
+                    break
+                batch_candidates.append(candidate)
+                if candidate_id in fresh_required_ids:
+                    break
+            if not batch_candidates:
+                continue
+            batch_count += 1
+            memory = MemorySnapshot.build(concept_rows, relations, events)
+            known_ids = {str(row["concept_id"]) for row in memory.concepts}
+            registry = ConceptRegistry(memory)
+            batch: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for candidate in batch_candidates:
+                candidate_id = str(candidate["concept_id"])
+                if candidate_id not in known_ids:
+                    processed_ids.add(candidate_id)
+                    fresh_required_ids.discard(candidate_id)
+                    continue
+                batch.append((candidate, self._package(candidate, registry, memory.version)))
+
+            results: list[dict[str, Any] | None] = [None] * len(batch)
+            pending: list[tuple[int, dict[str, Any]]] = []
+            for index, (_candidate, package) in enumerate(batch):
+                cached = None if refresh else self._load_cached(package)
+                if cached is None:
+                    pending.append((index, package))
+                else:
+                    results[index] = cached
+                    cached_count += 1
+            submitted_count += len(pending)
+            if pending:
+                with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                    futures = {
+                        pool.submit(self._process, package): index
+                        for index, package in pending
+                    }
+                    for future in as_completed(futures):
+                        index = futures[future]
+                        try:
+                            results[index] = future.result()
+                        except Exception as error:
+                            package = batch[index][1]
+                            results[index] = {
+                                "package_id": package["package_id"],
+                                "status": "failed",
+                                "attempt_count": 0,
+                                "input_fingerprint": self._fingerprint(package),
+                                "errors": [f"unhandled:{type(error).__name__}: {error}"],
+                            }
+
+            stale_candidates: list[dict[str, Any]] = []
+            for (candidate, package), result in zip(batch, results, strict=True):
+                candidate_id = str(candidate["concept_id"])
+                current_memory = MemorySnapshot.build(concept_rows, relations, events)
+                if candidate_id not in {str(row["concept_id"]) for row in current_memory.concepts}:
+                    processed_ids.add(candidate_id)
+                    fresh_required_ids.discard(candidate_id)
+                    continue
+                current_registry = ConceptRegistry(current_memory)
+                current_package = self._package(
+                    candidate, current_registry, current_memory.version,
+                )
+                if not self._same_review_dependencies(package, current_package):
+                    stale_candidates.append(candidate)
+                    fresh_required_ids.add(candidate_id)
+                    stale_result_count += 1
+                    continue
+                if result is None:
+                    raise RuntimeError(f"missing admission result: {candidate_id}")
+                review, event, generated = self._review(
+                    package, result, current_registry,
+                )
+                reviews.append(review)
+                if review["decision"] == "FAILED":
+                    failed_candidates.append(candidate)
+                processed_ids.add(candidate_id)
+                fresh_required_ids.discard(candidate_id)
+                if event is not None:
+                    events.append(event)
+                for row in generated:
+                    key = normalize_text(str(row.get("canonical_name") or ""))
+                    if not key or key in queued_names:
+                        continue
+                    queued_names.add(key)
+                    queue.append(row)
+                    concept_rows.append({
+                        "concept_id": row["concept_id"],
+                        "canonical_name": row["canonical_name"],
+                        "aliases": row.get("aliases") or [],
+                        "definition": row.get("definition"),
+                        "definition_type": row.get("definition_type"),
+                        "evidence_ids": row.get("evidence_ids") or [],
+                        "source_package_ids": row.get("source_package_ids") or [],
+                        "source_seed_ids": row.get("source_seed_ids") or [],
+                        "origin_depth": row.get("origin_depth", 1),
+                        "registration_status": "CANDIDATE",
+                    })
+                    generated_count += 1
+            queue.extendleft(reversed(stale_candidates))
+            elapsed_total = round(elapsed_before + time.monotonic() - started, 3)
             self._atomic_json(checkpoint_path, {
                 "checkpoint_key": checkpoint_key,
                 "new_events": events[len(base_events):],
@@ -510,7 +597,24 @@ class SerialConceptAdmissionRunner:
                 "reviews": reviews,
                 "generated_count": generated_count,
                 "failed_candidates": failed_candidates,
+                "fresh_required_ids": sorted(fresh_required_ids),
+                "runtime_stats": {
+                    "batch_count": batch_count,
+                    "cached_count": cached_count,
+                    "submitted_count": submitted_count,
+                    "stale_result_count": stale_result_count,
+                    "elapsed_seconds": elapsed_total,
+                },
             })
+            if self.progress is not None:
+                self.progress({
+                    "batch": batch_count,
+                    "processed": len(reviews),
+                    "selected": len(selected_candidates),
+                    "queued": len(queue),
+                    "stale": len(stale_candidates),
+                    "elapsed_seconds": elapsed_total,
+                })
 
         final_memory = MemorySnapshot.build(concept_rows, relations, events)
         report = {
@@ -522,11 +626,28 @@ class SerialConceptAdmissionRunner:
             "deferred_count": sum(row["status"] == "DEFER" for row in reviews),
             "rejected_count": sum(row["status"] == "REJECT" for row in reviews),
             "failed_count": sum(row["decision"] == "FAILED" for row in reviews),
+            "workers": self.workers,
+            "batch_count": batch_count,
+            "submitted_count": submitted_count,
+            "cached_count": cached_count,
+            "stale_result_count": stale_result_count,
             "reviewed_memory_event_count": len(events),
             "final_memory_version": final_memory.version,
             "library_audit": audit_concept_library(final_memory),
+            "elapsed_seconds": elapsed_total,
         }
         return reviews, events, report
+
+    @staticmethod
+    def _same_review_dependencies(
+        original: dict[str, Any], current: dict[str, Any],
+    ) -> bool:
+        """Ignore the opaque memory id when the model-visible recall is unchanged."""
+
+        return (
+            original["candidate"] == current["candidate"]
+            and original["registered_candidates"] == current["registered_candidates"]
+        )
 
     @staticmethod
     def _load_checkpoint(path: Path, checkpoint_key: str) -> dict[str, Any] | None:

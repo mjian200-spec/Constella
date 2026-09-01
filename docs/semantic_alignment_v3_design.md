@@ -98,7 +98,7 @@ package不得混合置信等级。package优先级为：置信等级、结构复
 
 ## 7. 审核记忆与epoch
 
-同一并发批次冻结使用一个只读记忆快照`Mn`。模型准入门对候选概念同时检查稳定种类、非实例/参数、单一身份、文章证据充分和类型清晰；只有五项全部通过且模型置信度为`HIGH`时，才写入完整的APPROVED概念事件。下一次运行加载它们形成`Mn+1`，重建索引并重新评分。
+同一并发批次冻结使用一个只读记忆快照`Mn`。模型准入门对候选概念同时检查稳定种类、非实例/参数、单一身份、文章证据充分和类型清晰；只有五项全部通过且模型置信度为`HIGH`时，才写入完整的APPROVED概念事件。批次结果仍按候选优先级串行提交；每次提交前用最新记忆重新构建该候选的已注册召回，如果模型可见的召回发生变化，该预取结果作废并按新记忆重审。这样只有召回互不影响的审核并行，同义合并和关系端点激活仍使用最新概念库。
 
 未审核LLM输出、规则参数、限定和`EXPRESSION_ONLY`不能进入记忆。缓存指纹必须包含`memory_version`，避免并发顺序影响结果。
 
@@ -128,6 +128,8 @@ python scripts/run_semantic_alignment_loop.py \
   --concept-output-dir outputs/article_concepts_full_20260829 \
   --context-output-dir outputs/context_builder_semantic_qwen38_27b_20260829
 ```
+
+概念审核并发数默认使用模型配置的`max_concurrency`，可用`--admission-workers`单独限制；`--workers`同时作为对象对齐和概念审核的统一覆盖值。审核进度会报告已提交数量、剩余队列和因依赖变化而重审的数量，最终报告记录`workers`、`batch_count`、`stale_result_count`和实际耗时。
 
 自动准入写入的是完整概念事件，而不是给720个候选批量补类型：
 
