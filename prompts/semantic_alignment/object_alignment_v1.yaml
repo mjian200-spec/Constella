@@ -1,51 +1,36 @@
-id: semantic_object_interpretation
-version: "8"
-max_tokens: 2400
+id: semantic_object_disposition
+version: "9"
+max_tokens: 2800
 system: |
-  你负责解释焊接规则中的对象表达结构。概念是跨规则稳定的种类；数值、阈值、条件、状态和限定不是对象概念本身。
+  你负责对焊接规则中已经抽取出的完整对象作语义归位。输入中的对象与规则状态边界已经由上游确定；不要把object_state_examples里的规则状态搬入对象改写，也不要输出“实体核”“修饰属性”“property_path”或无法处理的兜底类别。
 
-  对每个case判断：
-  1. ATOMIC：表达本身是单一核心对象，没有需要分离的条件、内在状态或限定。
-  2. DECOMPOSED：拆成一至四个核心对象，并把其他内容互斥地放入embedded_states或qualifiers。
-  3. EXPRESSION_ONLY：主语归属或结构无法可靠判断；此时不要强拆。
+  每个case必须选择且只选择一种决策：
 
-  embedded_states承载修饰信息（对象的内在固有状态，或相对上位概念仍需表达的对象差异），只有两种role：
-  - OBJECT_INTRINSIC_STATE：修饰对象是核心对象本身，例如“充电中的电池”的“电池|充电中”。
-  - RULE_CONDITION：修饰对象是外部量、环境或部件，例如“温度超过60°C的电池”的“温度|超过60°C”。
-  不能独立成为修饰信息的修饰词进入qualifiers，例如“高压电池”中的“高压”。
+  1. BIND：完整对象与一个已入库候选身份相同，在所有相关技术语境中可互换。normalized_objects恰好一个，必须引用当前case候选ID；derived_states为空。
 
-  core_objects中的concept_id只能是当前case.candidates里的语义相同概念ID；不能使用同包其他case的候选。没有正确候选时填null，不得创建ID。候选只是召回，不得因主题相关而选择。
+  2. REWRITE：输入对象把稳定对象与条件、状态或多个并列对象混写。输出一至四个最终对象，全部引用当前case候选ID；从对象短语中迁出的条件或状态进入derived_states。单对象REWRITE必须至少产生一条derived_state；多个并列对象可以不造状态。
+     示例：“电弧加热过的焊缝”改写为对象“焊缝”，派生OBJECT_INTRINSIC_STATE“经过电弧加热”。
+     示例：“温度超过60°C时充电中的电池组”改写为对象“电池组”和“温度”，并产生“电池组|正在充电”及RULE_CONDITION“温度|超过60°C”。
 
-  case.object_state_examples给出真实规则中的“对象 | 状态”组合。必须结合这些完整表达理解对象边界，避免只看对象短语而丢失语境；它们是判断依据，不要机械地把每个规则状态重复写入embedded_states。修饰信息只保留从长尾对象降级到上层概念时仍需表达的对象内在差异（如低频、单丝、阴极）以及对象的内在固有状态（如充电中）；规则状态仍由规则状态层处理。
+  3. CREATE：完整表达本身是焊接领域内稳定、可跨规则复用的实体、材料、设备、工艺、现象、过程、物理量种类或可测属性种类，但没有等价已入库候选。normalized_objects恰好一个且concept_id为null，文本必须是拟建完整规范名；proposal.canonical_name必须相同。不得把表达拆成通用词根。
+     可选relation_hints只用于当前case候选中的可靠关系，支持IS_A、PART_OF、PROPERTY_OF。例如“带电粒子运动方向”可作为完整领域属性概念，并以PROPERTY_OF指向“带电粒子”；不要建立脱离焊接语境的“运动方向”根概念。没有可靠目标时返回空数组，不得因主题相关强连关系。
 
-  当case.long_tail_fallback_required=true时，禁止把完整长尾表达作为新的核心对象：
-  - 若完整表达与某个已入库候选语义相同（包括别名），允许ATOMIC，但core_object必须引用该候选ID；这不会创建新概念。
-  - 若candidates中存在明确覆盖该对象的稳定上位概念，选择该上位概念作为core_object，把长尾表达相对上位概念增加的具体差异写入embedded_states（优先OBJECT_INTRINSIC_STATE）或qualifiers。此时decision必须为DECOMPOSED，core_object必须引用候选ID。
-  - 若完整表达由两个或更多已入库核心对象完整组成，允许DECOMPOSED且不强造差异状态；所有核心对象都必须引用当前case候选ID。
-  - 例如“低频脉冲TIG焊”可回退为已入库“脉冲TIG焊”，并把“低频”作为其内在状态；“某牌号铝合金焊丝”可回退为“铝合金焊丝”，牌号作为限定。
-  - 若没有可靠上位概念，返回EXPRESSION_ONLY，暂时保留原表达；不得以concept_id=null的ATOMIC/DECOMPOSED形式提出新对象概念。
-  - 上位概念必须是语义包容关系，不能仅因主题相关而选择。
+  4. DISCARD：表达不是可作为规则主语的对象，例如公式编号、纯符号或变量、元话语“提及”、谓词残片、OCR噪声或空语义。不得用DISCARD处理真实但低频的领域对象。必须返回reason_code和可核查理由。
 
-  long-tail few-shot（示例ID仅表示该case候选中的ID）：
-  - 输入对象“单丝MAG焊”，object_state_examples含“单丝MAG焊 | 熔滴过渡稳定”，候选c_mag=“MAG焊”：
-    {"decision":"DECOMPOSED","core_objects":[{"text":"MAG焊","concept_id":"c_mag"}],"embedded_states":[{"role":"OBJECT_INTRINSIC_STATE","subject_text":"MAG焊","state_text":"单丝"}],"qualifiers":[]}
-  - 输入对象“阴极热电子发射”，object_state_examples含“阴极热电子发射 | 增强”，候选c_emit=“热电子发射”：
-    {"decision":"DECOMPOSED","core_objects":[{"text":"热电子发射","concept_id":"c_emit"}],"embedded_states":[{"role":"OBJECT_INTRINSIC_STATE","subject_text":"热电子发射","state_text":"阴极"}],"qualifiers":[]}
-  - 输入对象“氦气价格”，object_state_examples含“氦气价格 | 远高于氩气”，候选c_he=“氦气”：
-    {"decision":"DECOMPOSED","core_objects":[{"text":"氦气","concept_id":"c_he"}],"embedded_states":[],"qualifiers":["价格"]}
-  - 输入“电弧和焊丝端头”，即使候选中分别有“电弧”和“焊丝端头”，若无法把两者关系可靠表示为状态或限定：
-    {"decision":"EXPRESSION_ONLY","core_objects":[],"embedded_states":[],"qualifiers":[]}
-  - 输入“作用区域”，候选只有主题相关而非上位概念：
-    {"decision":"EXPRESSION_ONLY","core_objects":[],"embedded_states":[],"qualifiers":[]}
-  反例：long-tail只回退到一个上层概念、却让embedded_states和qualifiers同时为空是不合格的；若两者语义完全相同应改用ATOMIC，若由多个概念完整组成则可不附加状态。不要照抄输入示例的ID，必须使用当前case自己的object_id和候选ID。
-  不解析或换算数值单位，不生成概念、关系或审核结论，不改写输入原文。
+  derived_states只承载从对象短语本身迁出的信息：
+  - OBJECT_INTRINSIC_STATE：状态主语是改写后的对象本身。
+  - RULE_CONDITION：对象短语中包含的外部条件，且该条件主语也必须出现在normalized_objects。
+  object_state_examples中的state是原规则RULE_VALUE，只用于理解语境，绝不能复制到derived_states。
+
+  候选只是召回。BIND/REWRITE只能引用当前case.candidates里的ID；CREATE不能引用已有ID。低频不构成丢弃或禁止建概念的理由。
 
   只返回JSON：
   {"interpretations":[{
     "object_id":"对象ID",
-    "decision":"ATOMIC|DECOMPOSED|EXPRESSION_ONLY",
-    "core_objects":[{"text":"核心对象文本","concept_id":"候选ID或null"}],
-    "embedded_states":[{"role":"OBJECT_INTRINSIC_STATE|RULE_CONDITION","subject_text":"状态主语","state_text":"状态原文"}],
-    "qualifiers":["限定原文"]
+    "decision":"BIND|REWRITE|CREATE|DISCARD",
+    "normalized_objects":[{"text":"最终完整对象名称","concept_id":"候选ID或null"}],
+    "derived_states":[{"role":"OBJECT_INTRINSIC_STATE|RULE_CONDITION","subject_text":"最终对象名称","state_text":"从对象短语迁出的状态原文"}],
+    "proposal":{"canonical_name":"完整规范名","relation_hints":[{"type":"IS_A|PART_OF|PROPERTY_OF","direction":"OUTGOING|INCOMING","target_concept_id":"当前case候选ID"}]}或null,
+    "discard":{"reason_code":"FORMULA_REFERENCE|SYMBOL_OR_VARIABLE|META_MENTION|NON_ENTITY_PREDICATE|OCR_NOISE|EMPTY_SEMANTICS","reason":"理由"}或null
   }]}。
-  必须覆盖每个case且恰好一次。EXPRESSION_ONLY的三个数组必须为空。不要输出理由或其他字段。
+  必须覆盖每个case且恰好一次。不要输出其他字段或解释。

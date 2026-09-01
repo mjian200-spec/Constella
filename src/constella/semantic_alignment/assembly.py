@@ -60,8 +60,8 @@ def assemble_semantics(
             }
     for object_id in selected_object_ids:
         if object_id not in interpretations:
-            interpretations[object_id] = _fallback_interpretation(
-                builder.object_rows[object_id], registry,
+            raise ValueError(
+                f"object alignment result is missing a decision: {object_id}"
             )
 
     proposals = _ProposalAccumulator()
@@ -69,26 +69,33 @@ def assemble_semantics(
     for object_id in selected_object_ids:
         source = builder.object_rows[object_id]
         interpretation = interpretations[object_id]
-        resolved_core: list[dict[str, Any]] = []
-        for core in interpretation.get("core_objects") or []:
+        resolved_objects: list[dict[str, Any]] = []
+        for normalized_object in interpretation.get("normalized_objects") or []:
             resolved = _resolve_object_component(
                 registry,
-                str(core["text"]),
-                core.get("concept_id"),
-                requested_match_method=core.get("match_method"),
+                str(normalized_object["text"]),
+                normalized_object.get("concept_id"),
+                requested_match_method=normalized_object.get("match_method"),
                 frequency=int(source["frequency"]),
+                proposal_hint=interpretation.get("proposal"),
             )
-            resolved_core.append(resolved)
-        structure = {
-            "ATOMIC": StructureStatus.ATOMIC,
-            "DECOMPOSED": StructureStatus.COMPOSED,
-            "EXPRESSION_ONLY": StructureStatus.UNRESOLVED,
-        }[interpretation["decision"]]
-        statuses = [str(row["alignment_status"]) for row in resolved_core]
-        if not statuses and int(source["frequency"]) >= proposal_threshold:
-            status = AlignmentStatus.PROPOSED
+            resolved_objects.append(resolved)
+        decision = str(interpretation["decision"])
+        if decision == "DISCARD":
+            structure = None
+            status = AlignmentStatus.DISCARDED
+        elif decision == "REJECTED":
+            structure = None
+            status = AlignmentStatus.REJECTED
         else:
-            status = combine_alignment_statuses(statuses)
+            structure = (
+                StructureStatus.COMPOSED
+                if decision == "REWRITE" or len(resolved_objects) > 1
+                else StructureStatus.ATOMIC
+            )
+            status = combine_alignment_statuses([
+                str(row["alignment_status"]) for row in resolved_objects
+            ])
         resolved_templates[object_id] = {
             "interpretation_id": stable_id("object_interpretation", {
                 "object_id": object_id,
@@ -97,9 +104,11 @@ def assemble_semantics(
             }),
             "structure": structure,
             "alignment_status": status,
-            "core_objects": resolved_core,
-            "embedded_states": list(interpretation.get("embedded_states") or []),
-            "qualifiers": list(interpretation.get("qualifiers") or []),
+            "decision": decision,
+            "normalized_objects": resolved_objects,
+            "derived_states": list(interpretation.get("derived_states") or []),
+            "discard": interpretation.get("discard"),
+            "candidate_concept_id": interpretation.get("candidate_concept_id"),
             "interpretation_method": interpretation.get("interpretation_method", "fallback"),
             "tier": package_cases.get(object_id, {}).get(
                 "tier", interpretation.get("tier", "H0"),
@@ -120,10 +129,10 @@ def assemble_semantics(
                 "concept_id": core.get("concept_id"),
                 "alignment_status": core["alignment_status"],
             }
-            for core in template["core_objects"]
+            for core in template["normalized_objects"]
         ]
-        output_core_objects: list[dict[str, Any]] = []
-        for core in template["core_objects"]:
+        output_normalized_objects: list[dict[str, Any]] = []
+        for core in template["normalized_objects"]:
             output_core = {key: value for key, value in core.items() if key != "proposal"}
             if core.get("proposal"):
                 output_core["proposal_id"] = proposals.add(
@@ -133,17 +142,17 @@ def assemble_semantics(
                 )
             else:
                 output_core["proposal_id"] = None
-            output_core_objects.append(output_core)
+            output_normalized_objects.append(output_core)
         intrinsic_ids: list[str] = []
         condition_ids: list[str] = []
-        for position, embedded in enumerate(template["embedded_states"]):
+        for position, embedded in enumerate(template["derived_states"]):
             state_record = _embedded_state_record(
                 registry,
                 normalizer,
                 source,
                 embedded,
                 position=position,
-                core_objects=template["core_objects"],
+                normalized_objects=template["normalized_objects"],
                 memory_version=builder.memory.version,
                 proposals=proposals,
             )
@@ -153,19 +162,6 @@ def assemble_semantics(
             else:
                 condition_ids.append(state_record["record_id"])
         object_status = str(template["alignment_status"])
-        if not template["core_objects"] and object_status == AlignmentStatus.PROPOSED:
-            proposal = {
-                "proposal_kind": ProposalKind.OBJECT_CONCEPT,
-                "concept_type": ConceptType.OBJECT,
-                "canonical_name": source["raw_object"],
-            }
-            proposal_id = proposals.add(
-                proposal, frequency=int(source["frequency"]),
-                raw_expression=source["raw_object"], source=source,
-                subject_object_concept_ids=[],
-            )
-        else:
-            proposal_id = None
         object_rows.append({
             "schema_version": SCHEMA_VERSION,
             "record_id": object_record_id,
@@ -174,10 +170,12 @@ def assemble_semantics(
             "raw_object": source["raw_object"],
             "structure": template["structure"],
             "alignment_status": object_status,
-            "core_objects": output_core_objects,
+            "decision": template["decision"],
+            "normalized_objects": output_normalized_objects,
             "intrinsic_state_record_ids": intrinsic_ids,
             "condition_record_ids": condition_ids,
-            "qualifiers": [{"text": value} for value in template["qualifiers"]],
+            "discard": template["discard"],
+            "candidate_concept_id": template["candidate_concept_id"],
             "frequency": int(source["frequency"]),
             "source_roles": source["roles"],
             "source_rule_ids": source["rule_ids"],
@@ -185,7 +183,10 @@ def assemble_semantics(
             "memory_version": builder.memory.version,
             "package_tier": template["tier"],
             "interpretation_method": template["interpretation_method"],
-            "proposal_id": proposal_id,
+            "proposal_id": next((
+                row.get("proposal_id") for row in output_normalized_objects
+                if row.get("proposal_id")
+            ), None),
         })
         normalized = normalizer.normalize(source["raw_state"])
         state_rows.append({
@@ -203,9 +204,11 @@ def assemble_semantics(
             "operator_family": normalized["operator_family"],
             "quantity": normalized["quantity"],
             "qualifiers": normalized["qualifiers"],
-            "subject_binding_status": combine_alignment_statuses([
-                str(ref["alignment_status"]) for ref in subject_refs
-            ]),
+            "subject_binding_status": (
+                combine_alignment_statuses([
+                    str(ref["alignment_status"]) for ref in subject_refs
+                ]) if subject_refs else object_status
+            ),
             "frequency": int(source["frequency"]),
             "source_roles": source["roles"],
             "source_rule_ids": source["rule_ids"],
@@ -216,21 +219,6 @@ def assemble_semantics(
     proposal_rows = _prioritize_proposals(
         proposals.rows(min_support=proposal_threshold), builder,
     )
-    allowed_proposal_ids = {row["proposal_id"] for row in proposal_rows}
-    for row in object_rows:
-        for core in row["core_objects"]:
-            if core.get("proposal_id") and core["proposal_id"] not in allowed_proposal_ids:
-                core["proposal_id"] = None
-                if core["alignment_status"] == AlignmentStatus.PROPOSED:
-                    core["alignment_status"] = AlignmentStatus.EXPRESSION_ONLY
-        if row.get("proposal_id") and row["proposal_id"] not in allowed_proposal_ids:
-            row["proposal_id"] = None
-        if row["core_objects"]:
-            row["alignment_status"] = combine_alignment_statuses([
-                str(core["alignment_status"]) for core in row["core_objects"]
-            ])
-        elif not row.get("proposal_id"):
-            row["alignment_status"] = AlignmentStatus.EXPRESSION_ONLY
     coverage_rows = _state_coverage(state_rows)
     report = _assembly_report(
         builder, selected_states, object_rows, state_rows, proposal_rows, coverage_rows, registry,

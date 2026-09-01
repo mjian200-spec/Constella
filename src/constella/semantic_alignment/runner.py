@@ -187,10 +187,9 @@ class SemanticAlignmentRunner:
                     if content is not None:
                         messages.append({"role": "assistant", "content": content})
                     correction = (
-                        "若错误涉及long-tail：语义等价的已入库候选可用ATOMIC；"
-                        "回退到单个上层概念时用DECOMPOSED，并在embedded_states或qualifiers中"
-                        "保留具体差异；由多个已入库概念完整组成时无需强造状态；"
-                        "无法可靠满足时用EXPRESSION_ONLY。禁止提出新的原子对象概念。"
+                        "完整对象等价于候选时用BIND；需要改写为已有对象并迁移对象短语中的"
+                        "条件或状态时用REWRITE；稳定领域对象没有匹配时用CREATE；公式、符号、"
+                        "元话语或无意义抽取用DISCARD。不得输出核、修饰属性或未定义的兜底类别。"
                     )
                     messages.append({
                         "role": "user",
@@ -267,58 +266,87 @@ class SemanticAlignmentRunner:
             if not isinstance(row, dict):
                 raise ValueError("every interpretation must be an object")
             decision = row.get("decision")
-            if decision not in {"ATOMIC", "DECOMPOSED", "EXPRESSION_ONLY"}:
+            if decision not in {"BIND", "REWRITE", "CREATE", "DISCARD"}:
                 raise ValueError("invalid interpretation decision")
-            core_objects = row.get("core_objects")
-            embedded_states = row.get("embedded_states")
-            qualifiers = row.get("qualifiers")
-            if not isinstance(core_objects, list) or not isinstance(embedded_states, list) or not isinstance(qualifiers, list):
-                raise ValueError("core_objects, embedded_states, and qualifiers must be lists")
-            if decision == "ATOMIC" and len(core_objects) != 1:
-                raise ValueError("ATOMIC interpretation requires exactly one core object")
-            if decision == "DECOMPOSED" and not 1 <= len(core_objects) <= 4:
-                raise ValueError("DECOMPOSED interpretation requires one to four core objects")
-            if decision == "EXPRESSION_ONLY" and core_objects:
-                raise ValueError("EXPRESSION_ONLY must not invent core objects")
+            normalized_objects = row.get("normalized_objects")
+            derived_states = row.get("derived_states")
+            proposal = row.get("proposal")
+            discard = row.get("discard")
+            if not isinstance(normalized_objects, list) or not isinstance(derived_states, list):
+                raise ValueError("normalized_objects and derived_states must be lists")
+            if decision == "BIND" and len(normalized_objects) != 1:
+                raise ValueError("BIND requires exactly one normalized object")
+            if decision == "REWRITE" and not 1 <= len(normalized_objects) <= 4:
+                raise ValueError("REWRITE requires one to four normalized objects")
+            if decision == "CREATE" and len(normalized_objects) != 1:
+                raise ValueError("CREATE requires exactly one proposed normalized object")
+            if decision == "DISCARD" and (normalized_objects or derived_states):
+                raise ValueError("DISCARD must not emit normalized objects or derived states")
             allowed = {str(candidate["id"]) for candidate in cases[row["object_id"]]["candidates"]}
-            seen_core: set[tuple[str, str]] = set()
-            for core in core_objects:
-                if not isinstance(core, dict) or not isinstance(core.get("text"), str) or not core["text"].strip():
-                    raise ValueError("every core object requires non-empty text")
-                concept_id = core.get("concept_id")
+            seen_objects: set[tuple[str, str]] = set()
+            for normalized in normalized_objects:
+                if not isinstance(normalized, dict) or not isinstance(normalized.get("text"), str) or not normalized["text"].strip():
+                    raise ValueError("every normalized object requires non-empty text")
+                concept_id = normalized.get("concept_id")
                 if concept_id is not None and concept_id not in allowed:
                     raise ValueError(
-                        f"object {row['object_id']} core concept_id {concept_id} is not in "
-                        f"this case candidates {sorted(allowed)}; use null when none matches"
+                        f"object {row['object_id']} normalized concept_id {concept_id} is not in "
+                        f"this case candidates {sorted(allowed)}"
                     )
-                key = (core["text"].strip(), str(concept_id or ""))
-                if key in seen_core:
-                    raise ValueError("duplicate core object")
-                seen_core.add(key)
-            if cases[row["object_id"]].get("long_tail_fallback_required"):
-                if decision not in {"ATOMIC", "DECOMPOSED", "EXPRESSION_ONLY"}:
-                    raise ValueError(
-                        "invalid long-tail decision"
-                    )
-                if decision == "ATOMIC" and not any(core.get("concept_id") for core in core_objects):
-                    raise ValueError("long-tail atomic match must reference an approved equivalent concept")
-                if decision == "DECOMPOSED":
-                    if not any(core.get("concept_id") for core in core_objects):
-                        raise ValueError("long-tail decomposition must reference an approved upper concept")
-                    if len(core_objects) == 1 and not embedded_states and not qualifiers:
-                        raise ValueError("long-tail decomposition must preserve the specific difference as state or qualifier")
-            if len(embedded_states) > 8:
-                raise ValueError("an interpretation supports at most eight embedded states")
-            for state in embedded_states:
+                if decision in {"BIND", "REWRITE"} and concept_id is None:
+                    raise ValueError(f"{decision} normalized objects must reference supplied concepts")
+                if decision == "CREATE" and concept_id is not None:
+                    raise ValueError("CREATE must not reference an existing concept")
+                key = (normalized["text"].strip(), str(concept_id or ""))
+                if key in seen_objects:
+                    raise ValueError("duplicate normalized object")
+                seen_objects.add(key)
+            if decision == "REWRITE" and len(normalized_objects) == 1 and not derived_states:
+                raise ValueError("single-object REWRITE must preserve the rewritten difference as a derived state")
+            if len(derived_states) > 8:
+                raise ValueError("an interpretation supports at most eight derived states")
+            normalized_texts = {item["text"].strip() for item in normalized_objects}
+            for state in derived_states:
                 if not isinstance(state, dict) or state.get("role") not in {
                     SemanticRole.OBJECT_INTRINSIC_STATE, SemanticRole.RULE_CONDITION,
                 }:
-                    raise ValueError("invalid embedded state role")
+                    raise ValueError("invalid derived state role")
                 for field in ("subject_text", "state_text"):
                     if not isinstance(state.get(field), str) or not state[field].strip():
-                        raise ValueError(f"embedded state requires {field}")
-            if len(qualifiers) > 8 or not all(isinstance(item, str) and item.strip() for item in qualifiers):
-                raise ValueError("qualifiers must contain at most eight non-empty strings")
+                        raise ValueError(f"derived state requires {field}")
+                if state["subject_text"].strip() not in normalized_texts:
+                    raise ValueError("derived state subject must be one of the normalized objects")
+            if decision == "CREATE":
+                if not isinstance(proposal, dict):
+                    raise ValueError("CREATE requires a proposal")
+                if str(proposal.get("canonical_name") or "").strip() != normalized_objects[0]["text"].strip():
+                    raise ValueError("proposal canonical_name must equal the proposed normalized object")
+                relation_hints = proposal.get("relation_hints")
+                if not isinstance(relation_hints, list) or len(relation_hints) > 8:
+                    raise ValueError("proposal relation_hints must be a list of at most eight items")
+                for hint in relation_hints:
+                    if not isinstance(hint, dict) or hint.get("type") not in {"IS_A", "PART_OF", "PROPERTY_OF"}:
+                        raise ValueError("invalid proposal relation hint type")
+                    if hint.get("direction") not in {"OUTGOING", "INCOMING"}:
+                        raise ValueError("invalid proposal relation hint direction")
+                    if str(hint.get("target_concept_id") or "") not in allowed:
+                        raise ValueError("proposal relation hint target must be a supplied candidate")
+                if discard is not None:
+                    raise ValueError("CREATE discard must be null")
+            elif proposal is not None:
+                raise ValueError("only CREATE may emit a proposal")
+            if decision == "DISCARD":
+                if not isinstance(discard, dict):
+                    raise ValueError("DISCARD requires structured discard metadata")
+                if discard.get("reason_code") not in {
+                    "FORMULA_REFERENCE", "SYMBOL_OR_VARIABLE", "META_MENTION",
+                    "NON_ENTITY_PREDICATE", "OCR_NOISE", "EMPTY_SEMANTICS",
+                }:
+                    raise ValueError("invalid discard reason_code")
+                if not isinstance(discard.get("reason"), str) or not discard["reason"].strip():
+                    raise ValueError("DISCARD requires a non-empty reason")
+            elif discard is not None:
+                raise ValueError("only DISCARD may emit discard metadata")
         return len(cases)
 
     def _load_cached(self, package: dict[str, Any]) -> dict[str, Any] | None:

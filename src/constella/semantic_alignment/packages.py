@@ -147,7 +147,7 @@ class SemanticPackageBuilder:
                 "rank_confidence": source["rank_confidence"],
                 "occurrence_rank": source["occurrence_rank"],
                 "rank_population": source.get("rank_population"),
-                "long_tail_fallback_required": (
+                "long_tail_case": (
                     source["rank_confidence"] == RankConfidence.LOW
                     and int(source["frequency"]) <= LONG_TAIL_MAX_OCCURRENCE
                     and source["exact_resolution"].get("status") != AlignmentStatus.MATCHED
@@ -197,7 +197,7 @@ class SemanticPackageBuilder:
                 ],
             }
         return {
-            "status": AlignmentStatus.EXPRESSION_ONLY,
+            "status": "NO_MATCH",
             "concept_id": None,
             "match_method": "NONE",
             "candidates": [],
@@ -249,15 +249,38 @@ class SemanticPackageBuilder:
             if exact["status"] == AlignmentStatus.MATCHED:
                 self.mechanical_interpretations[object_id] = {
                     "object_id": object_id,
-                    "decision": "ATOMIC",
-                    "core_objects": [{
+                    "decision": "BIND",
+                    "normalized_objects": [{
                         "text": item["name"],
                         "concept_id": exact["concept_id"],
                         "match_method": exact["match_method"],
                     }],
-                    "embedded_states": [],
-                    "qualifiers": [],
+                    "derived_states": [],
+                    "proposal": None,
+                    "discard": None,
                     "interpretation_method": "typed_exact",
+                    "tier": PackageTier.H0,
+                }
+                mechanical.append({
+                    **item,
+                    "tier": PackageTier.H0,
+                    "confidence": 1.0,
+                    "rank_confidence": RankConfidence.HIGH,
+                    "occurrence_rank": 0,
+                    "lexical_coverage": coverage,
+                    "structure_signal_count": signals,
+                    "exact_resolution": exact,
+                })
+            elif exact["status"] == AlignmentStatus.REJECTED:
+                self.mechanical_interpretations[object_id] = {
+                    "object_id": object_id,
+                    "decision": "REJECTED",
+                    "normalized_objects": [],
+                    "derived_states": [],
+                    "proposal": None,
+                    "discard": None,
+                    "candidate_concept_id": exact.get("candidate_concept_id"),
+                    "interpretation_method": "reviewed_rejection",
                     "tier": PackageTier.H0,
                 }
                 mechanical.append({

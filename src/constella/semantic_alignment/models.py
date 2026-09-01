@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 
-SCHEMA_VERSION = "semantic_alignment.v3"
+SCHEMA_VERSION = "semantic_alignment.v4"
 
 
 class ConceptType(StrEnum):
@@ -16,7 +16,6 @@ class ConceptType(StrEnum):
 class StructureStatus(StrEnum):
     ATOMIC = "ATOMIC"
     COMPOSED = "COMPOSED"
-    UNRESOLVED = "UNRESOLVED"
 
 
 class AlignmentStatus(StrEnum):
@@ -25,7 +24,8 @@ class AlignmentStatus(StrEnum):
     AMBIGUOUS = "AMBIGUOUS"
     PROPOSED = "PROPOSED"
     TYPE_REVIEW = "TYPE_REVIEW"
-    EXPRESSION_ONLY = "EXPRESSION_ONLY"
+    REJECTED = "REJECTED"
+    DISCARDED = "DISCARDED"
 
 
 class SemanticRole(StrEnum):
@@ -67,7 +67,7 @@ TIER_ORDER = {
 def combine_alignment_statuses(statuses: list[str]) -> str:
     """Collapse component statuses without conflating structure and alignment."""
     if not statuses:
-        return AlignmentStatus.EXPRESSION_ONLY
+        raise ValueError("alignment statuses must not be empty")
     values = set(statuses)
     if values == {AlignmentStatus.MATCHED}:
         return AlignmentStatus.MATCHED
@@ -79,4 +79,8 @@ def combine_alignment_statuses(statuses: list[str]) -> str:
         return AlignmentStatus.PARTIAL
     if AlignmentStatus.PROPOSED in values:
         return AlignmentStatus.PROPOSED
-    return AlignmentStatus.EXPRESSION_ONLY
+    if values == {AlignmentStatus.REJECTED}:
+        return AlignmentStatus.REJECTED
+    if values == {AlignmentStatus.DISCARDED}:
+        return AlignmentStatus.DISCARDED
+    raise ValueError(f"cannot combine alignment statuses: {sorted(values)}")

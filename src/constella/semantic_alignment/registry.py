@@ -74,6 +74,7 @@ class MemorySnapshot:
     version: str
     approved_memory_count: int
     reviewed_concept_ids: frozenset[str]
+    review_status_by_concept_id: dict[str, str]
 
     @classmethod
     def build(
@@ -94,8 +95,12 @@ class MemorySnapshot:
             relation.setdefault("registration_status", "CANDIDATE")
         approved_count = 0
         reviewed_concept_ids: set[str] = set()
+        review_status_by_concept_id: dict[str, str] = {}
         for event in reviewed_memory or []:
             concept_id = str(event.get("concept_id") or "")
+            event_status = str(event.get("status") or "").upper()
+            if concept_id and event_status:
+                review_status_by_concept_id[concept_id] = event_status
             # DEFER is parked, not terminal: the concept may be re-admitted in
             # the final re-review pass after all tiers complete.
             if concept_id and str(event.get("status") or "").upper() != "DEFER":
@@ -198,6 +203,7 @@ class MemorySnapshot:
             version=stable_id("memory", payload),
             approved_memory_count=approved_count,
             reviewed_concept_ids=frozenset(reviewed_concept_ids),
+            review_status_by_concept_id=review_status_by_concept_id,
         )
 
 
@@ -322,6 +328,15 @@ class ConceptRegistry:
                 "candidates": matches,
             }
         if not approved and len(candidates) == 1:
+            candidate_id = str(candidates[0]["id"])
+            if self.snapshot.review_status_by_concept_id.get(candidate_id) == "REJECT":
+                return {
+                    "status": AlignmentStatus.REJECTED,
+                    "concept_id": None,
+                    "candidate_concept_id": candidate_id,
+                    "match_method": MatchMethod.NONE,
+                    "candidates": matches,
+                }
             return {
                 "status": AlignmentStatus.PROPOSED,
                 "concept_id": candidates[0]["id"],
@@ -336,7 +351,7 @@ class ConceptRegistry:
                 "candidates": matches,
             }
         return {
-            "status": AlignmentStatus.EXPRESSION_ONLY,
+            "status": "NO_MATCH",
             "concept_id": None,
             "match_method": MatchMethod.NONE,
             "candidates": [],
