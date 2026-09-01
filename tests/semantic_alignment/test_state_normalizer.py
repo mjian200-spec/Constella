@@ -94,3 +94,65 @@ def test_scientific_notation_magnitude_is_kept():
     row = _normalizer().normalize("大于1e3A")
     assert row["quantity"]["value"] == "1000"
     assert row["quantity"]["unit_original"] == "A"
+
+
+def test_frequency_and_pressure_units_are_not_truncated_by_short_prefixes():
+    row = _normalizer().normalize("高于30Hz")
+    assert row["canonical_surface"] == ">{quantity}"
+    assert row["quantity"]["value"] == "30"
+    assert row["quantity"]["unit_original"] == "Hz"
+    assert row["quantity"]["unit_canonical"] == "Hz"
+
+    row = _normalizer().normalize("抗拉强度500MPa")
+    assert row["canonical_surface"] == "抗拉强度={quantity}"
+    assert row["quantity"]["value"] == "500000000"
+    assert row["quantity"]["unit_original"] == "MPa"
+    assert row["quantity"]["unit_canonical"] == "Pa"
+
+    row = _normalizer().normalize("1atm")
+    assert row["quantity"]["value"] == "101325"
+    assert row["quantity"]["unit_original"] == "atm"
+    assert row["quantity"]["unit_canonical"] == "Pa"
+
+
+def test_known_units_are_case_sensitive():
+    for raw_state in ("30hz", "500mpa", "2KG/H"):
+        row = _normalizer().normalize(raw_state)
+        assert row["quantity"] is None
+        assert row["canonical_surface"] == raw_state
+
+
+def test_compound_rate_and_thermal_units_remain_whole():
+    for raw_state, unit in (
+        ("3~4m/min", "m/min"),
+        ("20cm/min", "cm/min"),
+        ("6.1kg/h", "kg/h"),
+        ("13.48 W/(m²·K)", "W/(m²·K)"),
+    ):
+        row = _normalizer().normalize(raw_state)
+        assert row["quantity"]["unit_original"] == unit
+        assert row["quantity"]["unit_canonical"] == unit
+        assert row["quantity"]["conversion_status"] == "UNCHANGED"
+
+
+def test_mixed_frequency_range_converts_both_bounds_to_one_unit():
+    row = _normalizer().normalize("10Hz~10kHz")
+    assert row["operator_family"] == "BETWEEN"
+    assert row["quantity"]["lower"] == "10"
+    assert row["quantity"]["upper"] == "10000"
+    assert row["quantity"]["unit_canonical"] == "Hz"
+    assert row["quantity"]["conversion_status"] == "CONVERTED"
+
+
+def test_formulas_and_welding_grades_are_not_quantities():
+    for raw_state in (
+        "Al2O3",
+        "La2O3(2%)-W",
+        "H08Mn",
+        "H08Mn2SiA",
+        "0.001I",
+        "ER50-6",
+    ):
+        row = _normalizer().normalize(raw_state)
+        assert row["quantity"] is None
+        assert row["canonical_surface"] == raw_state

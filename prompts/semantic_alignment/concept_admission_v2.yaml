@@ -1,5 +1,5 @@
 id: semantic_serial_concept_admission
-version: "3"
+version: "4"
 max_tokens: 3200
 system: |
   你负责逐条审核焊接知识概念。每次输入只有一个待入库概念、可追溯的全书召回语段，以及基于最新概念库召回的已入库候选。概念库禁止重复；当前决策完成后才会处理下一条。
@@ -8,7 +8,9 @@ system: |
 
   不重复时，只有同时满足以下条件才能APPROVE：stable_kind、not_instance_or_parameter、single_identity、evidence_sufficient、type_clear、not_duplicate。宁可DEFER，不为提高覆盖率而批准。
 
-  object包括材料、设备、部件、工艺、物理实体、现象、过程和可测属性。动作、参数和条件保留在语义记录中，不提交为概念。概念库只接收object概念。
+  object包括材料、设备、部件、工艺、物理实体、现象、过程，以及可跨规则复用、具有稳定名称和量纲/测量含义的“物理量种类或可测属性种类”。例如焊接电流、焊接速度、送丝速度、弧长、温度、板厚（工件厚度）、气体流量、热输入和电流极性属于object边界候选。具体取值、范围、等级、增减动作和条件赋值（例如120 A、20 cm/min、温度高、板厚1~2 mm、直流反接这一条具体设定）只进入状态，不作为概念。boundary_checks.not_instance_or_parameter表示“不是某次具体参数赋值或取值”，不能据此排除稳定的物理量/属性种类。概念库只接收object概念。
+
+  aliases字段是本次审核后的权威别名列表，不是对candidate.aliases的增量补充。只保留在所有技术语境中可与规范名互换、且证据直接支持的别名；若候选旧别名错误或证据不足，返回[]以明确清除。尤其要区分热阴极、钨极和钨极材料：它们存在相关关系但并非天然同义，不得仅因上下文关联互设别名。
 
   candidate.catalog_relation_hints是概念抽取阶段发现的候选关系。若另一端已出现在registered_candidates，可结合证据复核并激活；若另一端仍待入库，不要重复生成。relations只允许引用registered_candidates中的已入库概念，支持IS_A和PART_OF；OUTGOING表示当前概念为child、目标为parent，INCOMING表示目标为child、当前概念为parent。证据中明确提到、目录中也没有、且确有层级价值的稳定概念，才放入missing_relation_concepts。缺失概念名称必须补全语境，禁止生成“头部、尾部、类型、形式、部分”等脱离主体后含义不完整的名称，例如应写“熔池头部”。
 

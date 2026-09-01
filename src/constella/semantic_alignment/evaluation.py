@@ -32,6 +32,24 @@ def artifact_metrics(
     coverage_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     rule_states = [row for row in state_rows if row.get("semantic_role") == SemanticRole.RULE_VALUE]
+    binding_by_role: dict[str, dict[str, Any]] = {}
+    for role in SemanticRole:
+        role_rows = [row for row in state_rows if row.get("semantic_role") == role]
+        role_weight = sum(int(row.get("frequency") or 0) for row in role_rows)
+        matched_rows = [
+            row for row in role_rows
+            if row.get("subject_binding_status") == AlignmentStatus.MATCHED
+        ]
+        matched_weight = sum(int(row.get("frequency") or 0) for row in matched_rows)
+        binding_by_role[str(role)] = {
+            "record_count": len(role_rows),
+            "occurrence_count": role_weight,
+            "status_counts": dict(Counter(
+                str(row.get("subject_binding_status") or "UNKNOWN") for row in role_rows
+            )),
+            "bound_rate": round(len(matched_rows) / len(role_rows), 4) if role_rows else 0.0,
+            "weighted_bound_rate": round(matched_weight / role_weight, 4) if role_weight else 0.0,
+        }
     object_weight = sum(int(row.get("frequency") or 0) for row in object_rows)
     state_weight = sum(int(row.get("frequency") or 0) for row in rule_states)
     object_matched_weight = sum(
@@ -57,6 +75,7 @@ def artifact_metrics(
         "state_subject_binding_status_counts": dict(Counter(
             str(row.get("subject_binding_status")) for row in rule_states
         )),
+        "state_subject_binding_by_semantic_role": binding_by_role,
         "structure_counts": dict(Counter(str(row.get("structure")) for row in object_rows)),
         "semantic_role_counts": dict(Counter(str(row.get("semantic_role")) for row in state_rows)),
         "object_matched_rate": round(

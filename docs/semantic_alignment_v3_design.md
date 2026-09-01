@@ -8,7 +8,7 @@
 
 `outputs/article_concepts_full_20260829`中的720个条目都是文章模型发现的`CANDIDATE`，不是审核通过概念。它们只参与召回和自动准入判断。只有完整概念身份与类型同时通过准入门、以`registration_status=APPROVED`写入版本化记忆后，才属于正式注册中心，才允许产生`MATCHED`和画像。
 
-概念只保存跨规则稳定的对象种类身份：`concept_id`、名称、别名、`object`类型、定义、`IS_A|PART_OF`和证据指针。状态值、状态谓词、原文、参数、条件和限定保存在结构化语义记录，不注册为概念。旧产物中的`type=state`仅作为兼容数据识别，不进入正式对象概念库。
+概念只保存跨规则稳定的对象种类身份：`concept_id`、名称、别名、`object`类型、定义、`IS_A|PART_OF`和证据指针。材料、设备、部件、工艺、物理实体、现象和过程属于对象；具有稳定名称、量纲或测量含义、可跨规则复用的“物理量种类/可测属性种类”也属于对象，例如焊接电流、焊接速度、送丝速度、弧长、温度、板厚、气体流量、热输入和电流极性。某次具体取值、范围、等级、变化动作或条件赋值只进入状态，例如`120 A`、`20 cm/min`、温度高、板厚`1~2 mm`和某条规则中的直流反接设定。准入检查中的“非实例/参数”指不是具体参数赋值，不能用来排除稳定的物理量种类。旧产物中的`type=state`仅作为兼容数据识别，不进入正式对象概念库。
 
 ## 2. 正交状态
 
@@ -76,6 +76,8 @@ source_rule_ids: []
 
 温标必须进行数值换算；`60°C`精确换算为`333.15K`。`≥`与`>`通过`inclusive`区分，不能无损合并。
 
+单位解析区分大小写并要求完整词法边界。先匹配`Hz`、`MPa`、`kg/h`、`m/min`、`cm/min`、`W/(m²·K)`等最长复合单位，再匹配单单位；化学式、焊材牌号和公式（例如`Al2O3`、`La2O3(2%)-W`、`H08Mn2SiA`、`ER50-6`、`0.001I`）不得被拆成数量表达。
+
 ## 5. 审核提案
 
 提案独立落盘，类型为：
@@ -98,7 +100,7 @@ package不得混合置信等级。package优先级为：置信等级、结构复
 
 ## 7. 审核记忆与epoch
 
-同一并发批次冻结使用一个只读记忆快照`Mn`。模型准入门对候选概念同时检查稳定种类、非实例/参数、单一身份、文章证据充分和类型清晰；只有五项全部通过且模型置信度为`HIGH`时，才写入完整的APPROVED概念事件。下一次运行加载它们形成`Mn+1`，重建索引并重新评分。
+同一并发批次冻结使用一个只读记忆快照`Mn`。模型准入门对候选概念同时检查稳定种类、非具体实例/参数赋值、单一身份、文章证据充分和类型清晰；只有全部检查通过且模型置信度为`HIGH`时，才写入完整的APPROVED概念事件。模型返回的`aliases`是权威审核结果：`[]`表示清除候选旧别名，程序不得回退拼接旧别名。下一次运行加载事件形成`Mn+1`，重建索引并重新评分；Prompt版本进入缓存指纹，边界政策或别名政策变化会使旧缓存失效。
 
 未审核LLM输出、规则参数、限定和`EXPRESSION_ONLY`不能进入记忆。缓存指纹必须包含`memory_version`，避免并发顺序影响结果。
 
@@ -116,7 +118,7 @@ package不得混合置信等级。package优先级为：置信等级、结构复
 
 ## 9. 自动递进运行方法
 
-单次对齐默认只运行到`H1`。自动循环按“初始目录准入→H1/H2/H3逐层对齐与准入→延后候选终审”运行；每层冻结使用最新对象概念库：
+单次对齐默认只运行到`H1`。自动循环按“初始目录准入→H1/H2/H3逐层对齐与准入→延后候选终审→最终冻结记忆全量对齐”运行；每层冻结使用最新对象概念库：
 
 ```bash
 # 只构建索引、分级和package，不调用模型
@@ -135,7 +137,9 @@ python scripts/run_semantic_alignment_loop.py \
 {"status":"APPROVED","proposal_kind":"CONCEPT_APPROVAL","approval_mode":"MODEL_GATE","concept":{"concept_id":"concept_xxx","canonical_name":"电弧","aliases":[],"definition":"...","type":"object","registration_status":"APPROVED","evidence_ids":["unit_x"]}}
 ```
 
-加载记忆后会生成新的`memory_version`，旧package缓存不会被误用；尚未完成的对象按新注册中心重新计算置信度和package。准入决策、未批准原因、Prompt、模型、基础记忆版本和每轮指标均独立落盘。延后候选在终审时使用全书唯一`source_state_id`、规则和证据单元；相同概念ID、相同规范名或已声明别名可以确定性合并证据，近义表达只由终审模型比较，不预先聚类。
+加载记忆后会生成新的`memory_version`，旧package缓存不会被误用；尚未完成的对象按新注册中心重新计算置信度和package。准入决策、未批准原因、Prompt、模型、基础记忆版本和每轮指标均独立落盘。动态生成候选的`DEFER`与普通候选一样进入parked集合。延后候选在终审时使用全书唯一`source_state_id`、规则和证据单元；相同概念ID、相同规范名或已声明别名可以确定性合并证据，近义表达只由终审模型比较，不预先聚类。任何`DEFER`、`FAILED`或`NOT_ACCEPTED`都必须写入`final_review_tasks.jsonl`并阻止“完全收敛”。
+
+最终准入与合并结束后，必须基于唯一的最终`memory_version`重新评分全部对象并执行一次无tier、无历史优先级清单的H0—H3全量对齐；不得拼接不同记忆版本的历史层级文件。正式五件套只取`final_alignment/`下的无后缀产物。`final_object_status_counts`只能从这份最终全量artifact计算。未注册目录同时输出`rejected_concepts.jsonl`、`not_accepted_concepts.jsonl`和`pending_concepts.jsonl`；报告按`RULE_VALUE`、`OBJECT_INTRINSIC_STATE`、`RULE_CONDITION`分别给出主语绑定率。
 
 提案带`support`、`unlock_count`和`review_priority=P0..P3`。候选准入以及同时具有高support和高解锁价值的对象概念最先处理；状态表达不进入概念晋升。
 

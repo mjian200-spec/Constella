@@ -140,15 +140,44 @@ def _registered_library(
     return concepts, relations, candidates
 
 
-def _write_library_snapshot(directory: Path, memory: MemorySnapshot) -> None:
+def _catalog_outcomes(
+    memory: MemorySnapshot,
+    events: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    latest = {
+        str(row["concept_id"]): row for row in events if row.get("concept_id")
+    }
+    outcomes = {"rejected": [], "not_accepted": [], "pending": []}
+    for row in _registered_library(memory)[2]:
+        status = str((latest.get(str(row["concept_id"])) or {}).get("status") or "PENDING").upper()
+        if status == "REJECT":
+            outcomes["rejected"].append(row)
+        elif status == "NOT_ACCEPTED":
+            outcomes["not_accepted"].append(row)
+        else:
+            outcomes["pending"].append(row)
+    return outcomes
+
+
+def _write_library_snapshot(
+    directory: Path,
+    memory: MemorySnapshot,
+    events: list[dict[str, Any]],
+) -> None:
     concepts, relations, candidates = _registered_library(memory)
+    outcomes = _catalog_outcomes(memory, events)
     write_jsonl(directory / "registered_concepts.jsonl", concepts)
     write_jsonl(directory / "registered_relations.jsonl", relations)
+    write_jsonl(directory / "rejected_concepts.jsonl", outcomes["rejected"])
+    write_jsonl(directory / "not_accepted_concepts.jsonl", outcomes["not_accepted"])
+    write_jsonl(directory / "pending_concepts.jsonl", outcomes["pending"])
+    # Compatibility aggregate. Consumers must use the split catalogs above
+    # when interpreting lifecycle state.
     write_jsonl(directory / "remaining_candidate_catalog.jsonl", candidates)
 
 
-def _alignment_suffix(tier: str, object_limit: int | None) -> str:
-    suffix = f"_{tier.lower()}"
+def _alignment_suffix(tier: str | None, object_limit: int | None) -> str:
+    suffix = f"_{tier.lower()}" if tier else ""
     return f"{suffix}_trial_limit_{object_limit}" if object_limit is not None else suffix
 
 
@@ -158,8 +187,8 @@ def _run_alignment(
     concept_dir: Path,
     reviewed_memory: Path,
     output_dir: Path,
-    tier: str,
-    priority_manifest: Path,
+    tier: str | None,
+    priority_manifest: Path | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     command = [
         sys.executable, str(ROOT / "scripts" / "align_semantics.py"),
@@ -170,13 +199,17 @@ def _run_alignment(
         "--reviewed-memory", str(reviewed_memory),
         "--config-dir", args.config_dir,
         "--model-key", args.model_key,
-        "--tier", tier,
-        "--priority-manifest", str(priority_manifest),
         "--proposal-threshold", str(args.proposal_threshold),
         "--candidates-per-object", str(args.candidates_per_object),
         "--objects-per-package", str(args.objects_per_package),
         "--max-package-chars", str(args.max_package_chars),
     ]
+    if priority_manifest is not None:
+        command.extend(["--priority-manifest", str(priority_manifest)])
+    if tier is not None:
+        command.extend(["--tier", tier])
+    else:
+        command.extend(["--max-tier", "H3"])
     if args.workers is not None:
         command.extend(["--workers", str(args.workers)])
     if args.object_limit is not None:
@@ -195,9 +228,92 @@ def _run_alignment(
     suffix = _alignment_suffix(tier, args.object_limit)
     report_path = output_dir / f"alignment_report{suffix}.json"
     proposals_path = output_dir / f"alignment_proposals{suffix}.jsonl"
+    required_artifacts = [
+        output_dir / f"object_semantics{suffix}.jsonl",
+        output_dir / f"state_semantics{suffix}.jsonl",
+        proposals_path,
+        output_dir / f"state_coverage{suffix}.jsonl",
+        report_path,
+    ]
+    missing = [str(path) for path in required_artifacts if not path.is_file()]
+    if missing:
+        raise RuntimeError(f"semantic alignment omitted formal artifacts: {missing}")
     report = json.loads(report_path.read_text(encoding="utf-8"))
     require_complete_alignment(report)
     return report, read_jsonl(proposals_path)
+
+
+def _record_review_outcomes(
+    reviews: list[dict[str, Any]],
+    candidate_rows: dict[str, dict[str, Any]],
+    parked_rows: dict[str, dict[str, Any]],
+    reviewed_concept_ids: set[str],
+    *,
+    cycle_number: int,
+) -> None:
+    """Keep every DEFER operable, including dynamically generated candidates."""
+    for review in reviews:
+        concept_id = str(review["concept_id"])
+        status = str(review.get("status") or "")
+        if status == "FAILED":
+            continue
+        if status != "DEFER":
+            reviewed_concept_ids.add(concept_id)
+            parked_rows.pop(concept_id, None)
+            continue
+        candidate = candidate_rows.get(concept_id)
+        if candidate is None:
+            raise ValueError(f"DEFER review has no operable candidate: {concept_id}")
+        parked = dict(candidate)
+        parked["defer_history"] = [
+            *(candidate.get("defer_history") or []),
+            {
+                "cycle": cycle_number,
+                "decision": "DEFER",
+                "reason": (
+                    (review.get("model_decision") or {}).get("reason")
+                    or review.get("gate_reason")
+                ),
+            },
+        ]
+        parked_rows[concept_id] = parked
+
+
+def _terminal_review_tasks(
+    reviews: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return unresolved review outcomes as explicit next actions."""
+    latest_reviews = {
+        str(row["concept_id"]): row for row in reviews if row.get("concept_id")
+    }
+    latest_events = {
+        str(row["concept_id"]): row for row in events if row.get("concept_id")
+    }
+    concept_ids = set(latest_reviews) | set(latest_events)
+    tasks = []
+    for concept_id in sorted(concept_ids):
+        review = latest_reviews.get(concept_id)
+        event = latest_events.get(concept_id)
+        status = str(
+            (review or {}).get("status") or (event or {}).get("status") or ""
+        ).upper()
+        if status not in {"DEFER", "FAILED", "NOT_ACCEPTED"}:
+            continue
+        source = review or event or {}
+        tasks.append({
+            "concept_id": concept_id,
+            "canonical_name": str(source.get("canonical_name") or ""),
+            "status": status,
+            "action": {
+                "DEFER": "FINAL_REREVIEW",
+                "FAILED": "RETRY_ADMISSION",
+                "NOT_ACCEPTED": "MANUAL_BOUNDARY_OR_MERGE_REVIEW",
+            }[status],
+            "gate_reason": source.get("gate_reason"),
+            "reason": (source.get("model_decision") or {}).get("reason") or source.get("reason"),
+        })
+    return tasks
 
 
 def _parked_from_event(
@@ -318,24 +434,38 @@ def _summary(
     events: list[dict[str, Any]],
     memory: MemorySnapshot,
     stop_reason: str,
+    final_alignment: dict[str, Any] | None,
+    terminal_tasks: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    last_alignment = next(
-        (row["alignment"] for row in reversed(cycles) if row.get("alignment")),
-        {},
-    )
-    assembly = last_alignment.get("assembly") or {}
+    alignment = final_alignment or {}
+    assembly = alignment.get("assembly") or {}
+    evaluation = alignment.get("evaluation") or {}
+    catalog_outcomes = _catalog_outcomes(memory, events)
     return {
-        "schema_version": "semantic_alignment.lifecycle.v1",
+        "schema_version": "semantic_alignment.lifecycle.v2",
         "stop_reason": stop_reason,
+        "fully_converged": stop_reason == "ALL_TIERS_COMPLETED",
         "cycle_count": len(cycles),
         "reviewed_memory_event_count": len(events),
         "final_memory_version": memory.version,
         "final_library_audit": audit_concept_library(memory),
-        "final_object_status_counts": assembly.get("object_status_counts") or {},
+        "final_catalog_status_counts": {
+            key: len(rows) for key, rows in catalog_outcomes.items()
+        },
+        "terminal_review_task_count": len(terminal_tasks),
+        "terminal_review_status_counts": _distribution(terminal_tasks, "status"),
+        "final_alignment_memory_version": alignment.get("memory_version"),
+        "final_alignment_source_state_count": alignment.get("source_state_count"),
+        "final_alignment_normalized_object_count": alignment.get("normalized_object_count"),
+        "final_object_status_counts": evaluation.get("object_status_counts") or {},
         "final_state_subject_binding_status_counts": (
             assembly.get("state_subject_binding_status_counts") or {}
         ),
+        "final_state_subject_binding_by_semantic_role": (
+            evaluation.get("state_subject_binding_by_semantic_role") or {}
+        ),
         "final_invariants": assembly.get("invariants") or {},
+        "final_alignment": alignment,
         "cycles": cycles,
     }
 
@@ -348,8 +478,12 @@ def _review_markdown(report: dict[str, Any]) -> str:
         f"- 停止原因：`{report['stop_reason']}`",
         f"- 完成轮数：{report['cycle_count']}",
         f"- 最终记忆版本：`{report['final_memory_version']}`",
+        f"- 完全收敛：{'是' if report['fully_converged'] else '否'}",
         f"- 已入库概念：{audit['registered_concept_count']}",
-        f"- 剩余候选概念：{audit['candidate_concept_count']}",
+        f"- 拒绝目录：{report['final_catalog_status_counts']['rejected']}",
+        f"- 未准入目录：{report['final_catalog_status_counts']['not_accepted']}",
+        f"- 待处理目录：{report['final_catalog_status_counts']['pending']}",
+        f"- 未完成终局任务：{report['terminal_review_task_count']}",
         f"- 已批准关系：{sum(audit['relation_counts'].values())}",
         f"- 有正式关系的概念：{audit['registered_concepts_with_relations']}",
         f"- 孤立已入库概念：{audit['isolated_registered_concept_count']}",
@@ -366,6 +500,14 @@ def _review_markdown(report: dict[str, Any]) -> str:
     ])
     for status, count in sorted(report["final_object_status_counts"].items()):
         lines.append(f"- `{status}`：{count}")
+    lines.extend(["", "## 状态主语绑定率", ""])
+    for role, values in sorted(
+        report["final_state_subject_binding_by_semantic_role"].items()
+    ):
+        lines.append(
+            f"- `{role}`：记录绑定率 {values['bound_rate']:.2%}，"
+            f"频次加权绑定率 {values['weighted_bound_rate']:.2%}"
+        )
     lines.extend([
         "",
         "## 每轮变化",
@@ -477,6 +619,7 @@ def main() -> int:
         (Path(args.config_dir) / "models.yaml").read_text(encoding="utf-8")
     )["models"]
     cycles: list[dict[str, Any]] = []
+    all_reviews: list[dict[str, Any]] = []
     priority_manifest = output / "object_priority_manifest.jsonl"
     stop_reason = "MAX_CYCLES_REACHED"
     for cycle_number, (admission_source, alignment_tier) in enumerate(stage_plan, start=1):
@@ -541,37 +684,23 @@ def main() -> int:
             refresh=args.refresh_admissions,
             limit=args.admission_limit,
         )
-        pending_by_id = {str(row["concept_id"]): row for row in pending}
-        for review in reviews:
-            concept_id = str(review["concept_id"])
-            if review["status"] != "DEFER":
-                reviewed_concept_ids.add(concept_id)
-                continue
-            candidate = pending_by_id.get(concept_id)
-            if candidate is None:
-                reviewed_concept_ids.add(concept_id)
-                continue
-            parked = dict(candidate)
-            parked["defer_history"] = [
-                *(candidate.get("defer_history") or []),
-                {
-                    "cycle": cycle_number,
-                    "decision": "DEFER",
-                    "reason": (
-                        (review.get("model_decision") or {}).get("reason")
-                        or review.get("gate_reason")
-                    ),
-                },
-            ]
-            parked_rows[concept_id] = parked
-        write_jsonl(cycle_dir / "pending_concepts.jsonl", pending)
+        all_reviews.extend(reviews)
+        catalog = [dict(row) for row in admission.concept_rows]
+        _record_review_outcomes(
+            reviews, admission.candidate_rows, parked_rows, reviewed_concept_ids,
+            cycle_number=cycle_number,
+        )
+        write_jsonl(
+            cycle_dir / "pending_concepts.jsonl",
+            list(admission.candidate_rows.values()),
+        )
         write_jsonl(cycle_dir / "admission_reviews.jsonl", reviews)
         write_jsonl(output / "reviewed_memory.jsonl", events)
 
         memory = MemorySnapshot.build(catalog, inputs.relations, events)
         library_audit = audit_concept_library(memory)
         write_json(cycle_dir / "concept_library_audit.json", library_audit)
-        _write_library_snapshot(cycle_dir, memory)
+        _write_library_snapshot(cycle_dir, memory, events)
         if not all(library_audit["invariants"].values()):
             stop_reason = "CONCEPT_LIBRARY_INVARIANT_FAILED"
             cycles.append({
@@ -607,7 +736,7 @@ def main() -> int:
             }
             cycles.append(cycle_report)
             write_json(cycle_dir / "cycle_report.json", cycle_report)
-            stop_reason = "ALL_TIERS_COMPLETED"
+            stop_reason = "FINAL_REREVIEW_COMPLETED"
             break
 
         cycle_report = {
@@ -625,16 +754,59 @@ def main() -> int:
         write_json(cycle_dir / "cycle_report.json", cycle_report)
 
     final_memory = MemorySnapshot.build(catalog, inputs.relations, events)
+    terminal_tasks = _terminal_review_tasks(all_reviews, events)
+    write_jsonl(output / "final_review_tasks.jsonl", terminal_tasks)
+    final_alignment = None
+    if stop_reason == "FINAL_REREVIEW_COMPLETED":
+        if terminal_tasks:
+            stop_reason = "FINAL_REVIEW_ACTIONS_REQUIRED"
+        elif args.admission_limit is not None or args.object_limit is not None:
+            stop_reason = "TRIAL_LIMIT_REACHED"
+        else:
+            final_concept_input = output / "final_concept_input"
+            _write_concept_input(final_concept_input, catalog, inputs.relations)
+            final_alignment, _final_proposals = _run_alignment(
+                args,
+                concept_dir=final_concept_input,
+                reviewed_memory=output / "reviewed_memory.jsonl",
+                output_dir=output / "final_alignment",
+                tier=None,
+                # The formal run must rescore every object from the final
+                # frozen memory; staged priority assignments belong to older
+                # memory versions and must not be reused here.
+                priority_manifest=None,
+            )
+            assembly = final_alignment.get("assembly") or {}
+            if final_alignment.get("memory_version") != final_memory.version:
+                stop_reason = "FINAL_ALIGNMENT_MEMORY_MISMATCH"
+            elif final_alignment.get("run_mode") != "full":
+                stop_reason = "FINAL_ALIGNMENT_NOT_FULL"
+            elif not all((assembly.get("invariants") or {}).values()):
+                stop_reason = "FINAL_ALIGNMENT_INVARIANT_FAILED"
+            else:
+                stop_reason = "ALL_TIERS_COMPLETED"
     final_report = _summary(
-        cycles=cycles, events=events, memory=final_memory, stop_reason=stop_reason,
+        cycles=cycles,
+        events=events,
+        memory=final_memory,
+        stop_reason=stop_reason,
+        final_alignment=final_alignment,
+        terminal_tasks=terminal_tasks,
     )
-    _write_library_snapshot(output / "final_library", final_memory)
+    _write_library_snapshot(output / "final_library", final_memory, events)
     write_json(output / "lifecycle_report.json", final_report)
     (output / "final_review_summary.md").write_text(
         _review_markdown(final_report), encoding="utf-8",
     )
     print(json.dumps(final_report, ensure_ascii=False, indent=2))
-    return 0 if stop_reason != "CONCEPT_LIBRARY_INVARIANT_FAILED" else 2
+    blocking_reasons = {
+        "CONCEPT_LIBRARY_INVARIANT_FAILED",
+        "FINAL_REVIEW_ACTIONS_REQUIRED",
+        "FINAL_ALIGNMENT_MEMORY_MISMATCH",
+        "FINAL_ALIGNMENT_NOT_FULL",
+        "FINAL_ALIGNMENT_INVARIANT_FAILED",
+    }
+    return 2 if stop_reason in blocking_reasons else 0
 
 
 if __name__ == "__main__":

@@ -362,6 +362,11 @@ def test_generated_generic_relation_name_is_context_completed_and_checkpoint_res
 
     assert [row["canonical_name"] for row in reviews] == ["熔池", "熔池头部"]
     assert report["generated_pending_concept_count"] == 1
+    generated = next(
+        row for row in runner.candidate_rows.values()
+        if row["canonical_name"] == "熔池头部"
+    )
+    assert generated["candidate_origin"] == "MISSING_RELATION_CONCEPT"
     first_call_count = client.calls
     resumed_reviews, resumed_events, resumed_report = runner.run(
         candidates, concepts=concepts, relations=[],
@@ -370,6 +375,35 @@ def test_generated_generic_relation_name_is_context_completed_and_checkpoint_res
     assert resumed_events == events
     assert resumed_report == report
     assert client.calls == first_call_count
+
+
+def test_empty_reviewed_aliases_clear_extraction_aliases(tmp_path):
+    concept = {
+        "concept_id": "hot_cathode", "canonical_name": "热阴极",
+        "aliases": ["钨极"], "definition": "受热后发射电子的阴极。",
+        "evidence_ids": ["u1"],
+    }
+    candidate = {
+        **concept, "candidate_id": "hot_cathode", "occurrence_count": 1,
+        "evidence": [{"evidence_id": "u1", "text": "热阴极受热后发射电子。"}],
+    }
+    runner = SerialConceptAdmissionRunner(
+        {"fake": {"model": "fake-model"}}, "fake",
+        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
+        client=_SerialFakeClient(),
+    )
+    assert str(runner.prompt["version"]) == "4"
+    assert "aliases字段是本次审核后的权威别名列表" in runner.prompt["system"]
+    assert "焊接电流、焊接速度、送丝速度、弧长、温度、板厚" in runner.prompt["system"]
+    assert "具体取值、范围、等级" in runner.prompt["system"]
+
+    _reviews, events, _report = runner.run(
+        [candidate], concepts=[concept], relations=[],
+    )
+
+    final = MemorySnapshot.build([concept], [], events)
+    assert final.concepts[0]["canonical_name"] == "热阴极"
+    assert final.concepts[0]["aliases"] == []
 
 
 def test_failed_checkpoint_candidate_is_requeued_on_resume(tmp_path):

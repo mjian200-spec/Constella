@@ -400,6 +400,8 @@ class SerialConceptAdmissionRunner:
         self.output_dir = Path(output_dir)
         self.client = client or LLMClient(models)
         self.allow_defer = allow_defer
+        self.concept_rows: list[dict[str, Any]] = []
+        self.candidate_rows: dict[str, dict[str, Any]] = {}
         self.prompt = yaml.safe_load(Path(prompt_path).read_text(encoding="utf-8"))
         if not isinstance(self.prompt, dict) or not {"id", "version", "system"} <= set(self.prompt):
             raise ValueError("invalid serial concept admission prompt")
@@ -435,6 +437,10 @@ class SerialConceptAdmissionRunner:
             processed_ids = set(saved["processed_ids"])
             reviews = list(saved["reviews"])
             generated_count = int(saved["generated_count"])
+            candidate_rows = {
+                str(row["concept_id"]): dict(row)
+                for row in saved["candidate_rows"]
+            }
             failed_ids = {
                 str(row["concept_id"]) for row in reviews if row.get("decision") == "FAILED"
             }
@@ -456,6 +462,9 @@ class SerialConceptAdmissionRunner:
             reviews = []
             generated_count = 0
             failed_candidates = []
+            candidate_rows = {
+                str(row["concept_id"]): dict(row) for row in selected_candidates
+            }
         queued_names = {
             normalize_text(str(row.get("canonical_name") or ""))
             for row in concept_rows
@@ -488,6 +497,7 @@ class SerialConceptAdmissionRunner:
                     continue
                 queued_names.add(key)
                 queue.append(row)
+                candidate_rows[str(row["concept_id"])] = dict(row)
                 concept_rows.append({
                     "concept_id": row["concept_id"],
                     "canonical_name": row["canonical_name"],
@@ -509,10 +519,13 @@ class SerialConceptAdmissionRunner:
                 "processed_ids": sorted(processed_ids),
                 "reviews": reviews,
                 "generated_count": generated_count,
+                "candidate_rows": list(candidate_rows.values()),
                 "failed_candidates": failed_candidates,
             })
 
         final_memory = MemorySnapshot.build(concept_rows, relations, events)
+        self.concept_rows = concept_rows
+        self.candidate_rows = candidate_rows
         report = {
             "input_candidate_count": len(candidates),
             "processed_candidate_count": len(reviews),
@@ -538,7 +551,7 @@ class SerialConceptAdmissionRunner:
             return None
         required = {
             "new_events", "concept_rows", "queue", "processed_ids", "reviews",
-            "generated_count",
+            "generated_count", "candidate_rows",
         }
         if value.get("checkpoint_key") != checkpoint_key or not required <= set(value):
             return None
@@ -830,7 +843,9 @@ class SerialConceptAdmissionRunner:
         concept = {
             "concept_id": candidate["concept_id"],
             "canonical_name": str(decision.get("canonical_name") or candidate["canonical_name"]),
-            "aliases": list(dict.fromkeys(decision.get("aliases") or candidate.get("aliases") or [])),
+            # The reviewed aliases are authoritative. In particular, an empty
+            # list explicitly removes unverified extraction-stage aliases.
+            "aliases": list(dict.fromkeys(decision.get("aliases") or [])),
             "definition": decision.get("definition") or candidate.get("definition"),
             "definition_type": "reviewed", "type": decision["selected_type"],
             "registration_status": "APPROVED",

@@ -33,12 +33,14 @@ def test_stage_plan_pairs_each_tier_with_its_own_admission_and_ends_with_final_r
     assert module.selected_stage_plan(1) == (("INITIAL", None),)
     assert module.selected_stage_plan(3) == module.STAGE_PLAN[:3]
     assert module.selected_stage_plan(5) == module.STAGE_PLAN
+    assert module._alignment_suffix(None, None) == ""
 
 
 def test_final_review_prompt_schema_stays_compatible_with_admission_validation():
     prompt = yaml.safe_load(PROMPT_PATH.read_text(encoding="utf-8"))
     assert {"id", "version", "system"} <= set(prompt)
     assert prompt["id"] == "semantic_serial_concept_final_review"
+    assert str(prompt["version"]) == "3"
     # The review offers no DEFER: it is the terminal decision.
     assert '"decision":"APPROVE|MERGE|REJECT"' in prompt["system"].replace(" ", "")
     assert "禁止DEFER" in prompt["system"]
@@ -213,3 +215,100 @@ def test_final_library_export_omits_legacy_state_concepts():
     assert [row["concept_id"] for row in concepts] == ["arc"]
     assert relations == []
     assert candidates == []
+
+
+def test_dynamic_generated_defer_is_parked_as_an_operable_candidate():
+    module = _load_runner_module()
+    generated = {
+        "concept_id": "pool_head", "canonical_name": "熔池头部",
+        "candidate_origin": "MISSING_RELATION_CONCEPT", "aliases": [],
+    }
+    review = {
+        "concept_id": "pool_head", "canonical_name": "熔池头部",
+        "status": "DEFER", "gate_reason": "model_defer",
+        "model_decision": {"reason": "需等待全书证据。"},
+    }
+    parked = {}
+    reviewed = set()
+
+    module._record_review_outcomes(
+        [review], {"pool_head": generated}, parked, reviewed, cycle_number=2,
+    )
+
+    assert parked["pool_head"]["candidate_origin"] == "MISSING_RELATION_CONCEPT"
+    assert parked["pool_head"]["defer_history"] == [{
+        "cycle": 2, "decision": "DEFER", "reason": "需等待全书证据。",
+    }]
+    assert reviewed == set()
+
+
+def test_unresolved_terminal_outcomes_become_tasks_and_block_convergence():
+    module = _load_runner_module()
+    reviews = [
+        {"concept_id": "a", "canonical_name": "甲", "status": "FAILED"},
+        {
+            "concept_id": "b", "canonical_name": "乙", "status": "NOT_ACCEPTED",
+            "gate_reason": "duplicate_registered_name_or_alias_requires_merge",
+        },
+    ]
+    events = [{
+        "concept_id": "c", "canonical_name": "丙", "status": "DEFER",
+        "reason": "证据不足",
+    }]
+
+    tasks = module._terminal_review_tasks(reviews, events)
+
+    assert {row["status"] for row in tasks} == {"FAILED", "NOT_ACCEPTED", "DEFER"}
+    assert {row["action"] for row in tasks} == {
+        "RETRY_ADMISSION", "MANUAL_BOUNDARY_OR_MERGE_REVIEW", "FINAL_REREVIEW",
+    }
+
+
+def test_candidate_catalog_is_split_by_latest_terminal_status():
+    module = _load_runner_module()
+    concepts = [
+        {"concept_id": "r", "canonical_name": "拒绝项", "type": "object"},
+        {"concept_id": "n", "canonical_name": "未准入项", "type": "object"},
+        {"concept_id": "p", "canonical_name": "待处理项", "type": "object"},
+    ]
+    events = [
+        {"concept_id": "r", "status": "REJECT", "accepted": False},
+        {"concept_id": "n", "status": "NOT_ACCEPTED", "accepted": False},
+        {"concept_id": "p", "status": "DEFER", "accepted": False},
+    ]
+    memory = MemorySnapshot.build(concepts, [], events)
+
+    outcomes = module._catalog_outcomes(memory, events)
+
+    assert [row["concept_id"] for row in outcomes["rejected"]] == ["r"]
+    assert [row["concept_id"] for row in outcomes["not_accepted"]] == ["n"]
+    assert [row["concept_id"] for row in outcomes["pending"]] == ["p"]
+
+
+def test_lifecycle_summary_uses_only_final_full_artifact_counts():
+    module = _load_runner_module()
+    memory = MemorySnapshot.build([], [], [])
+    staged = {"assembly": {"object_status_counts": {"PROPOSED": 99}}}
+    final = {
+        "memory_version": memory.version,
+        "source_state_count": 19470,
+        "evaluation": {
+            "object_status_counts": {"MATCHED": 6166},
+            "state_subject_binding_by_semantic_role": {
+                "RULE_CONDITION": {"bound_rate": 0.75, "weighted_bound_rate": 0.8},
+            },
+        },
+        "assembly": {"invariants": {"source_frequency_preserved": True}},
+    }
+
+    report = module._summary(
+        cycles=[{"alignment": staged}], events=[], memory=memory,
+        stop_reason="ALL_TIERS_COMPLETED", final_alignment=final, terminal_tasks=[],
+    )
+
+    assert report["fully_converged"] is True
+    assert report["final_object_status_counts"] == {"MATCHED": 6166}
+    assert report["final_alignment_source_state_count"] == 19470
+    assert report["final_state_subject_binding_by_semantic_role"]["RULE_CONDITION"][
+        "bound_rate"
+    ] == 0.75

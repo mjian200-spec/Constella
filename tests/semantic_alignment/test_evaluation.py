@@ -40,7 +40,10 @@ def test_artifact_metrics_use_frequency_and_compress_proposals():
         [{"frequency": 3, "alignment_status": "MATCHED", "structure": "ATOMIC"}],
         [
             {"frequency": 2, "semantic_role": "RULE_VALUE", "subject_binding_status": "MATCHED"},
-            {"frequency": 1, "semantic_role": "RULE_CONDITION", "proposal_id": "p1"},
+            {
+                "frequency": 1, "semantic_role": "RULE_CONDITION", "proposal_id": "p1",
+                "subject_binding_status": "PROPOSED",
+            },
         ],
         [{"proposal_kind": "OBJECT_CONCEPT", "review_priority": "P1"}],
         [{"observations": [{}, {}]}],
@@ -49,6 +52,17 @@ def test_artifact_metrics_use_frequency_and_compress_proposals():
     assert report["derived_state_count"] == 1
     assert report["proposal_compression_rate"] == 1.0
     assert report["coverage_observation_count"] == 2
+    assert report["state_subject_binding_by_semantic_role"]["RULE_VALUE"]["bound_rate"] == 1.0
+    assert report["state_subject_binding_by_semantic_role"]["RULE_CONDITION"] == {
+        "record_count": 1,
+        "occurrence_count": 1,
+        "status_counts": {"PROPOSED": 1},
+        "bound_rate": 0.0,
+        "weighted_bound_rate": 0.0,
+    }
+    assert report["state_subject_binding_by_semantic_role"]["OBJECT_INTRINSIC_STATE"][
+        "record_count"
+    ] == 0
 
 
 def test_candidate_recall_includes_mechanical_resolutions():
