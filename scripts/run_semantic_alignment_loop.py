@@ -529,8 +529,8 @@ def _review_markdown(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Run serial concept admission and parallel object alignment until the "
-            "concept/object lifecycle converges."
+            "Run serial initial admission, concurrent later admission, and parallel "
+            "object alignment until the concept/object lifecycle converges."
         ),
     )
     parser.add_argument("--output-dir", default="outputs/semantic_alignment_lifecycle")
@@ -557,6 +557,10 @@ def main() -> int:
     parser.add_argument("--objects-per-package", type=int, default=12)
     parser.add_argument("--max-package-chars", type=int, default=40_000)
     parser.add_argument("--workers", type=int)
+    parser.add_argument(
+        "--admission-workers", type=int, default=8,
+        help="Concurrent concept reviews for cycles 2-5; cycle 1 always stays serial.",
+    )
     parser.add_argument("--refresh-admissions", action="store_true")
     parser.add_argument("--refresh-alignments", action="store_true")
     parser.add_argument(
@@ -573,6 +577,8 @@ def main() -> int:
         parser.error("--admission-limit must be positive")
     if args.object_limit is not None and args.object_limit < 1:
         parser.error("--object-limit must be positive")
+    if args.admission_workers < 1:
+        parser.error("--admission-workers must be positive")
 
     output = Path(args.output_dir)
     if output.exists() and any(output.iterdir()) and not args.resume:
@@ -674,6 +680,7 @@ def main() -> int:
         event_count_before = len(events)
         admission = SerialConceptAdmissionRunner(
             models, args.model_key, prompt_path, cycle_dir / "admission_cache",
+            workers=1 if cycle_number == 1 else args.admission_workers,
             allow_defer=not final_pass,
         )
         reviews, events, admission_report = admission.run(
