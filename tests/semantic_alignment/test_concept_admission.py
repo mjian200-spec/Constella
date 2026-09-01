@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import threading
-import time
 
 from constella.semantic_alignment.concept_admission import (
     SerialConceptAdmissionRunner,
@@ -57,29 +55,6 @@ class _SerialFakeClient:
             "model": "fake-model",
             "choices": [{"message": {"content": json.dumps(output, ensure_ascii=False)}}],
         }
-
-
-class _ConcurrentFakeClient:
-    def __init__(self):
-        self.active = 0
-        self.max_active = 0
-        self.lock = threading.Lock()
-
-    def complete(self, _model_key, messages, **_kwargs):
-        with self.lock:
-            self.active += 1
-            self.max_active = max(self.max_active, self.active)
-        try:
-            time.sleep(0.05)
-            package = json.loads(messages[1]["content"])
-            output = _decision(package["candidate"])
-            return {
-                "model": "fake-model",
-                "choices": [{"message": {"content": json.dumps(output, ensure_ascii=False)}}],
-            }
-        finally:
-            with self.lock:
-                self.active -= 1
 
 
 class _HierarchyFakeClient:
@@ -310,7 +285,7 @@ def test_serial_admission_second_candidate_sees_first_and_merges(tmp_path):
     runner = SerialConceptAdmissionRunner(
         {"fake": {"model": "fake-model"}}, "fake",
         "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
-        workers=2, client=client,
+        client=client,
     )
 
     reviews, events, report = runner.run(
@@ -321,51 +296,10 @@ def test_serial_admission_second_candidate_sees_first_and_merges(tmp_path):
     assert len(set(client.memory_versions)) == 2
     assert report["approved_count"] == 1
     assert report["merged_count"] == 1
-    assert report["stale_result_count"] == 1
-    assert report["submitted_count"] == 3
     final = MemorySnapshot.build(concepts, [], events)
     assert len(final.concepts) == 1
     assert final.concepts[0]["concept_id"] == "arc"
     assert "弧光" in final.concepts[0]["aliases"]
-
-
-def test_independent_admissions_are_reviewed_concurrently(tmp_path):
-    concepts = [
-        {
-            "concept_id": "arc", "canonical_name": "电弧", "aliases": [],
-            "definition": "气体放电现象", "evidence_ids": ["u1"],
-        },
-        {
-            "concept_id": "torch", "canonical_name": "焊枪", "aliases": [],
-            "definition": "输送焊丝的设备", "evidence_ids": ["u2"],
-        },
-    ]
-    candidates = [
-        {
-            **row, "candidate_id": row["concept_id"], "occurrence_count": 2,
-            "evidence": [{"evidence_id": row["evidence_ids"][0], "text": row["definition"]}],
-        }
-        for row in concepts
-    ]
-    client = _ConcurrentFakeClient()
-    progress = []
-    runner = SerialConceptAdmissionRunner(
-        {"fake": {"model": "fake-model"}}, "fake",
-        "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
-        workers=2, client=client, progress=progress.append,
-    )
-
-    reviews, _events, report = runner.run(
-        candidates, concepts=concepts, relations=[],
-    )
-
-    assert [row["decision"] for row in reviews] == ["APPROVE", "APPROVE"]
-    assert client.max_active == 2
-    assert report["workers"] == 2
-    assert report["batch_count"] == 1
-    assert report["submitted_count"] == 2
-    assert report["stale_result_count"] == 0
-    assert progress[-1]["processed"] == 2
 
 
 def test_serial_admission_activates_relation_when_other_endpoint_is_registered(tmp_path):
@@ -389,7 +323,7 @@ def test_serial_admission_activates_relation_when_other_endpoint_is_registered(t
     runner = SerialConceptAdmissionRunner(
         {"fake": {"model": "fake-model"}}, "fake",
         "prompts/semantic_alignment/concept_admission_v2.yaml", tmp_path,
-        workers=2, client=_HierarchyFakeClient(),
+        client=_HierarchyFakeClient(),
     )
 
     _reviews, events, report = runner.run(
@@ -403,8 +337,6 @@ def test_serial_admission_activates_relation_when_other_endpoint_is_registered(t
     assert len(approved_relations) == 1
     assert approved_relations[0]["child_concept_id"] == "child"
     assert approved_relations[0]["parent_concept_id"] == "parent"
-    assert report["stale_result_count"] == 1
-    assert report["submitted_count"] == 3
     assert report["library_audit"]["relation_counts"] == {"IS_A": 1}
 
 

@@ -387,8 +387,8 @@ def _review_markdown(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Run dependency-safe concurrent concept review and parallel object "
-            "alignment until the concept/object lifecycle converges."
+            "Run serial concept admission and parallel object alignment until the "
+            "concept/object lifecycle converges."
         ),
     )
     parser.add_argument("--output-dir", default="outputs/semantic_alignment_lifecycle")
@@ -414,14 +414,7 @@ def main() -> int:
     parser.add_argument("--candidates-per-object", type=int, default=8)
     parser.add_argument("--objects-per-package", type=int, default=12)
     parser.add_argument("--max-package-chars", type=int, default=40_000)
-    parser.add_argument(
-        "--workers", type=int,
-        help="Maximum concurrent alignment calls; also used for admission unless overridden.",
-    )
-    parser.add_argument(
-        "--admission-workers", type=int,
-        help="Concurrent speculative concept reviews; defaults to --workers or model max_concurrency.",
-    )
+    parser.add_argument("--workers", type=int)
     parser.add_argument("--refresh-admissions", action="store_true")
     parser.add_argument("--refresh-alignments", action="store_true")
     parser.add_argument(
@@ -438,10 +431,6 @@ def main() -> int:
         parser.error("--admission-limit must be positive")
     if args.object_limit is not None and args.object_limit < 1:
         parser.error("--object-limit must be positive")
-    if args.workers is not None and args.workers < 1:
-        parser.error("--workers must be positive")
-    if args.admission_workers is not None and args.admission_workers < 1:
-        parser.error("--admission-workers must be positive")
 
     output = Path(args.output_dir)
     if output.exists() and any(output.iterdir()) and not args.resume:
@@ -487,11 +476,6 @@ def main() -> int:
     models = yaml.safe_load(
         (Path(args.config_dir) / "models.yaml").read_text(encoding="utf-8")
     )["models"]
-    admission_workers = (
-        args.admission_workers
-        or args.workers
-        or int(models[args.model_key].get("max_concurrency", 1))
-    )
     cycles: list[dict[str, Any]] = []
     priority_manifest = output / "object_priority_manifest.jsonl"
     stop_reason = "MAX_CYCLES_REACHED"
@@ -547,16 +531,7 @@ def main() -> int:
         event_count_before = len(events)
         admission = SerialConceptAdmissionRunner(
             models, args.model_key, prompt_path, cycle_dir / "admission_cache",
-            workers=admission_workers,
             allow_defer=not final_pass,
-            progress=lambda row: print(
-                "[concept-admission] "
-                f"batch={row['batch']} processed={row['processed']}/{row['selected']} "
-                f"queued={row['queued']} stale={row['stale']} "
-                f"elapsed={row['elapsed_seconds']:.1f}s",
-                file=sys.stderr,
-                flush=True,
-            ),
         )
         reviews, events, admission_report = admission.run(
             pending,
